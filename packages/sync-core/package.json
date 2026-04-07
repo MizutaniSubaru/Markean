@@ -1,0 +1,18 @@
+{
+  "name": "@markean/sync-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@markean/domain": "workspace:*"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.0.0"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
