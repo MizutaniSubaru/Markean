@@ -1,0 +1,17 @@
+{
+  "name": "markean",
+  "private": true,
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@markean/domain": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

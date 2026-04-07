@@ -1,7 +1,10 @@
 .DS_Store
 /.build
-/Packages
+/Packages/
+!/packages/
+!/packages/**
 .superpowers/
+/node_modules/
 xcuserdata/
 DerivedData/
 .swiftpm/configuration/registries.json
