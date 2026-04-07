@@ -24,7 +24,7 @@ export default defineWorkspace([
     test: {
       name: "@markean/web",
       root: "./apps/web",
-      include: ["test/**/*.test.tsx"],
+      include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
       environment: "jsdom",
     },
   },
