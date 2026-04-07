@@ -3,6 +3,20 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-04-07",
   "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SYNC_COORDINATOR",
+        "class_name": "SyncCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SyncCoordinator"]
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
