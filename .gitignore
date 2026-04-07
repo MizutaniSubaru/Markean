@@ -7,6 +7,9 @@
 node_modules/
 /apps/web/dist/
 test-results/
+/Package.swift
+/Package.resolved
+/Sources/
 xcuserdata/
 DerivedData/
 .swiftpm/configuration/registries.json
