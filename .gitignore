@@ -6,6 +6,7 @@
 .superpowers/
 node_modules/
 /apps/web/dist/
+test-results/
 xcuserdata/
 DerivedData/
 .swiftpm/configuration/registries.json

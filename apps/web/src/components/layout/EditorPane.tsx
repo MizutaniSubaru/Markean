@@ -1,3 +1,6 @@
+import { useEffect, useState } from "react";
+import { getDraft, saveDraft } from "../../lib/storage";
+
 type Note = {
   id: string;
   folderId: string;
@@ -12,6 +15,12 @@ type EditorPaneProps = {
 };
 
 export function EditorPane({ note, previewMode }: EditorPaneProps) {
+  const [body, setBody] = useState(() => getDraft(note.id, note.body));
+
+  useEffect(() => {
+    setBody(getDraft(note.id, note.body));
+  }, [note.body, note.id]);
+
   return (
     <section className="pane pane--editor" aria-labelledby="editor-title">
       <div className="pane__header pane__header--editor">
@@ -29,10 +38,19 @@ export function EditorPane({ note, previewMode }: EditorPaneProps) {
         {previewMode ? (
           <article className="editor-preview">
             <h3>{note.title}</h3>
-            <p>{note.body}</p>
+            <p>{body}</p>
           </article>
         ) : (
-          <textarea className="editor-input" defaultValue={note.body} aria-label={note.title} />
+          <textarea
+            className="editor-input"
+            value={body}
+            aria-label="Note body"
+            onChange={(event) => {
+              const nextBody = event.target.value;
+              setBody(nextBody);
+              saveDraft(note.id, nextBody);
+            }}
+          />
         )}
       </div>
     </section>
