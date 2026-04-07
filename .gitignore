@@ -5,6 +5,7 @@
 !/packages/**
 .superpowers/
 node_modules/
+/apps/web/dist/
 xcuserdata/
 DerivedData/
 .swiftpm/configuration/registries.json
