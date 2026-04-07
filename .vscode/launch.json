@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Markean}",
+            "name": "Debug Markean",
+            "target": "Markean",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Markean"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Markean}",
+            "name": "Release Markean",
+            "target": "Markean",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Markean"
+        }
+    ]
+}
