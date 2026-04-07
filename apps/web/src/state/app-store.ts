@@ -17,6 +17,12 @@ type NoteRecord = {
   deletedAt?: string | null;
 };
 
+type ConflictCopyRecord = {
+  id: string;
+  title: string;
+  bodyMd: string;
+};
+
 type BootstrapPayload = {
   folders?: FolderRecord[];
   notes?: NoteRecord[];
@@ -31,12 +37,16 @@ export function createAppStore({ api }: { api: BootstrapApi }) {
   const state = {
     folders: [] as FolderRecord[],
     notes: [] as NoteRecord[],
+    conflictedCopies: [] as ConflictCopyRecord[],
     syncCursor: 0,
   };
 
   return {
     getState() {
       return state;
+    },
+    applySyncResult(result: { conflictedCopies?: ConflictCopyRecord[] }) {
+      state.conflictedCopies = result.conflictedCopies ?? [];
     },
     async bootstrap() {
       const payload = await api.bootstrap();

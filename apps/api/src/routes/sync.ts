@@ -13,6 +13,40 @@ export const syncRoutes = new Hono<{ Bindings: Env }>()
       changes: Array<Omit<SyncChangeInput, "userId" | "deviceId">>;
     };
 
+    const db = getDb(c.env);
+    const conflicts = [];
+
+    for (const change of body.changes) {
+      const currentNote = await db
+        .prepare(
+          `SELECT current_revision AS currentRevision
+           FROM notes
+           WHERE id = ?`,
+        )
+        .bind(change.entityId)
+        .first<{ currentRevision: number }>();
+
+      const serverRevision = currentNote?.currentRevision ?? 0;
+      if (serverRevision > change.baseRevision) {
+        conflicts.push({
+          entityId: change.entityId,
+          serverRevision,
+          localTitle: change.payload.title,
+          localBodyMd: change.payload.bodyMd,
+        });
+      }
+    }
+
+    if (conflicts.length > 0) {
+      return c.json(
+        {
+          accepted: [],
+          conflicts,
+        },
+        409,
+      );
+    }
+
     const coordinator = c.env.SYNC_COORDINATOR.getByName(DEV_USER_ID);
     const accepted = [];
 

@@ -18,6 +18,16 @@ type TransactionRunner<TDb extends QueueDatabase> = <T>(
   scope: () => Promise<T>,
 ) => PromiseLike<T>;
 
+type ReconcilePushResultInput = {
+  accepted: unknown[];
+  conflicts: Array<{
+    entityId: string;
+    serverRevision: number;
+    localTitle: string;
+    localBodyMd: string;
+  }>;
+};
+
 export async function queueNoteUpdate<TDb extends QueueDatabase>(
   db: TDb,
   input: {
@@ -47,4 +57,15 @@ export async function queueNoteUpdate<TDb extends QueueDatabase>(
     await db.notes.put(note);
     await db.pendingChanges.put(change);
   });
+}
+
+export function reconcilePushResult(result: ReconcilePushResultInput) {
+  return {
+    accepted: result.accepted,
+    conflictedCopies: result.conflicts.map((conflict) => ({
+      id: `${conflict.entityId}_conflict`,
+      title: `${conflict.localTitle} (Conflicted Copy)`,
+      bodyMd: conflict.localBodyMd,
+    })),
+  };
 }

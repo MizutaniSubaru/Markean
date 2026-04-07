@@ -1,1 +1,1 @@
-export { queueNoteUpdate } from "./push-pull";
+export { queueNoteUpdate, reconcilePushResult } from "./push-pull";

@@ -8,13 +8,22 @@ function isBrowser() {
   return typeof window !== "undefined";
 }
 
-function getStorage() {
+function isStorageLike(storage: unknown): storage is Storage {
+  return (
+    typeof storage === "object" &&
+    storage !== null &&
+    typeof (storage as Storage).getItem === "function" &&
+    typeof (storage as Storage).setItem === "function"
+  );
+}
+
+function getStorage(): Storage | undefined {
   if (!isBrowser()) {
     return undefined;
   }
 
-  const storage = window.localStorage as Partial<Storage> | undefined;
-  if (!storage || typeof storage.getItem !== "function" || typeof storage.setItem !== "function") {
+  const storage = window.localStorage;
+  if (!isStorageLike(storage)) {
     return undefined;
   }
 
