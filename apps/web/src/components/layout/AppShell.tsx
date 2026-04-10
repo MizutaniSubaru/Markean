@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   getDraft,
   getWorkspaceSnapshot,
@@ -12,8 +12,6 @@ import {
 import { EditorPane } from "./EditorPane";
 import { FoldersPane } from "./FoldersPane";
 import { NotesPane } from "./NotesPane";
-import { SyncBadge } from "./SyncBadge";
-import { ComposeIcon, FolderPlusIcon, SearchIcon, SidebarIcon } from "./icons";
 
 const defaultFolders: WorkspaceFolder[] = [
   { id: "inbox", name: "Inbox" },
@@ -191,9 +189,6 @@ function groupNotesByDate(notes: WorkspaceNote[], folderNameById: Map<string, st
 
 export function AppShell() {
   const [previewMode, setPreviewMode] = useState(false);
-  const [foldersCollapsed, setFoldersCollapsed] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const deferredQuery = useDeferredValue(searchQuery.trim().toLowerCase());
   const [workspace, setWorkspace] = useState(loadWorkspace);
 
   useEffect(() => {
@@ -208,17 +203,12 @@ export function AppShell() {
   }));
 
   const activeFolder = workspace.folders.find((folder) => folder.id === workspace.activeFolderId) ?? workspace.folders[0] ?? null;
-  const notesInScope = deferredQuery
-    ? workspace.notes.filter((note) => {
-        const haystack = `${note.title}\n${note.body}\n${folderNameById.get(note.folderId) ?? ""}`.toLowerCase();
-        return haystack.includes(deferredQuery);
-      })
-    : workspace.notes.filter((note) => note.folderId === activeFolder?.id);
+  const notesInScope = workspace.notes.filter((note) => note.folderId === activeFolder?.id);
   const activeNote =
     workspace.notes.find((note) => note.id === workspace.activeNoteId) ??
     sortNotes(notesInScope)[0] ??
     null;
-  const noteSections = groupNotesByDate(notesInScope, folderNameById, Boolean(deferredQuery));
+  const noteSections = groupNotesByDate(notesInScope, folderNameById, false);
 
   const handleSelectFolder = (folderId: string) => {
     setWorkspace((current) => {
@@ -245,7 +235,6 @@ export function AppShell() {
       activeFolderId: folderId,
       activeNoteId: "",
     }));
-    setFoldersCollapsed(false);
     setPreviewMode(false);
     setSyncStatus("unsynced");
   };
@@ -323,77 +312,26 @@ export function AppShell() {
   };
 
   return (
-    <div className="app-shell">
-      <header className="window-bar">
-        <div className="window-bar__left">
-          <div className="traffic-lights" aria-hidden="true">
-            <span className="traffic-lights__dot traffic-lights__dot--red" />
-            <span className="traffic-lights__dot traffic-lights__dot--amber" />
-            <span className="traffic-lights__dot traffic-lights__dot--green" />
-          </div>
-          <button
-            className="toolbar-button"
-            type="button"
-            aria-label={foldersCollapsed ? "Show folders" : "Hide folders"}
-            onClick={() => setFoldersCollapsed((current) => !current)}
-          >
-            <SidebarIcon className="toolbar-button__icon" />
-          </button>
-        </div>
-
-        <div className="window-bar__center">
-          <p className="window-bar__eyebrow">Markean</p>
-          <p className="window-bar__title">
-            {deferredQuery ? `${notesInScope.length} results` : activeFolder?.name ?? "All Notes"}
-          </p>
-        </div>
-
-        <div className="window-bar__right">
-          <button className="toolbar-button" type="button" aria-label="New folder" onClick={handleCreateFolder}>
-            <FolderPlusIcon className="toolbar-button__icon" />
-          </button>
-          <button className="toolbar-button" type="button" aria-label="New note" onClick={handleCreateNote}>
-            <ComposeIcon className="toolbar-button__icon" />
-          </button>
-          <SyncBadge />
-          <label className="search-field">
-            <SearchIcon className="search-field__icon" />
-            <input
-              className="search-field__input"
-              type="search"
-              aria-label="Search notes"
-              placeholder="Search"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-            />
-          </label>
-        </div>
-      </header>
-
-      <main className={`workspace-grid${foldersCollapsed ? " workspace-grid--folders-collapsed" : ""}`}>
-        {foldersCollapsed ? null : (
-          <FoldersPane
-            folders={folders}
-            activeFolderId={activeFolder?.id ?? ""}
-            onCreateFolder={handleCreateFolder}
-            onHide={() => setFoldersCollapsed(true)}
-            onSelectFolder={handleSelectFolder}
-          />
-        )}
-
+    <div className="three-pane-layout">
+      <aside className="pane-sidebar">
+        <FoldersPane
+          folders={folders}
+          activeFolderId={activeFolder?.id ?? ""}
+          onCreateFolder={handleCreateFolder}
+          onSelectFolder={handleSelectFolder}
+        />
+      </aside>
+      <section className="pane-notes-list">
         <NotesPane
-          title={deferredQuery ? "Search results" : activeFolder?.name ?? "Notes"}
-          subtitle={
-            deferredQuery
-              ? `${notesInScope.length} matching notes`
-              : `${notesInScope.length} notes in ${activeFolder?.name ?? "this folder"}`
-          }
+          title={activeFolder?.name ?? "Notes"}
+          subtitle={`${notesInScope.length} notes in ${activeFolder?.name ?? "this folder"}`}
           sections={noteSections}
           activeNoteId={activeNote?.id ?? ""}
           onCreateNote={handleCreateNote}
           onSelectNote={handleSelectNote}
         />
-
+      </section>
+      <main className="pane-editor">
         <EditorPane
           note={activeNote}
           previewMode={previewMode}
