@@ -66,3 +66,31 @@ body {
   flex-direction: column;
   overflow: hidden;
 }
+
+.sidebar-header {
+  padding: 20px 20px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.sidebar-item {
+  padding: 8px 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.sidebar-item.active {
+  background: #e1e1e3;
+  border-radius: 8px;
+  margin: 0 10px;
+  padding: 8px 10px;
+}
+
+.sidebar-icon {
+  color: var(--apple-blue);
+}
