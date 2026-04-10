@@ -32,19 +32,15 @@ export async function consumeMagicLinkToken(db: D1Database, token: string) {
   const now = new Date().toISOString();
   const row = await db
     .prepare(
-      `SELECT id, email, client_type AS clientType, redirect_target AS redirectTarget
-       FROM magic_link_tokens
+      `UPDATE magic_link_tokens
+       SET consumed_at = ?
        WHERE token_hash = ?
          AND consumed_at IS NULL
-         AND expires_at > ?`,
+         AND expires_at > ?
+       RETURNING id, email, client_type AS clientType, redirect_target AS redirectTarget`,
     )
-    .bind(tokenHash, now)
+    .bind(now, tokenHash, now)
     .first<MagicLinkTokenRow>();
 
-  if (!row) {
-    return null;
-  }
-
-  await db.prepare("UPDATE magic_link_tokens SET consumed_at = ? WHERE id = ?").bind(now, row.id).run();
-  return row;
+  return row ?? null;
 }

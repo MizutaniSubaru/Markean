@@ -1,14 +1,15 @@
 import { createOpaqueToken, hashOpaqueToken } from "../auth/crypto";
+import type { AuthProvider } from "./auth-accounts";
 
 type AuthCodeRow = {
   id: string;
   userId: string;
-  provider: "google" | "apple" | "magic_link";
+  provider: AuthProvider;
 };
 
 export async function createAuthCode(
   db: D1Database,
-  input: { userId: string; provider: "google" | "apple" | "magic_link"; ttlMs: number },
+  input: { userId: string; provider: AuthProvider; ttlMs: number },
 ) {
   const value = await createOpaqueToken("ac");
   const codeHash = await hashOpaqueToken(value);
@@ -31,19 +32,15 @@ export async function consumeAuthCode(db: D1Database, value: string) {
   const now = new Date().toISOString();
   const row = await db
     .prepare(
-      `SELECT id, user_id AS userId, provider
-       FROM auth_codes
+      `UPDATE auth_codes
+       SET consumed_at = ?
        WHERE code_hash = ?
          AND consumed_at IS NULL
-         AND expires_at > ?`,
+         AND expires_at > ?
+       RETURNING id, user_id AS userId, provider`,
     )
-    .bind(codeHash, now)
+    .bind(now, codeHash, now)
     .first<AuthCodeRow>();
 
-  if (!row) {
-    return null;
-  }
-
-  await db.prepare("UPDATE auth_codes SET consumed_at = ? WHERE id = ?").bind(now, row.id).run();
-  return row;
+  return row ?? null;
 }

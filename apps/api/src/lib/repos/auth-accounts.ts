@@ -1,7 +1,9 @@
+export type AuthProvider = "google" | "apple" | "magic_link";
+
 type AuthAccountRow = {
   id: string;
   userId: string;
-  provider: string;
+  provider: AuthProvider;
   providerSubject: string;
   email: string;
   emailVerified: boolean;
@@ -12,7 +14,7 @@ type AuthAccountRow = {
 const mapAuthAccountRow = (row: {
   id: string;
   userId: string;
-  provider: string;
+  provider: AuthProvider;
   providerSubject: string;
   email: string;
   emailVerified: number;
@@ -27,7 +29,7 @@ export async function upsertAuthAccount(
   db: D1Database,
   input: {
     userId: string;
-    provider: string;
+    provider: AuthProvider;
     providerSubject: string;
     email: string;
     emailVerified: boolean;
@@ -49,7 +51,6 @@ export async function upsertAuthAccount(
          updated_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(provider, provider_subject) DO UPDATE SET
-         user_id = excluded.user_id,
          email = excluded.email,
          email_verified = excluded.email_verified,
          updated_at = excluded.updated_at`,
@@ -62,7 +63,11 @@ export async function upsertAuthAccount(
 
 export const createAuthAccount = upsertAuthAccount;
 
-export async function getAuthAccountByProviderSubject(db: D1Database, provider: string, providerSubject: string) {
+export async function getAuthAccountByProviderSubject(
+  db: D1Database,
+  provider: AuthProvider,
+  providerSubject: string,
+) {
   const row = await db
     .prepare(
       `SELECT
@@ -82,7 +87,7 @@ export async function getAuthAccountByProviderSubject(db: D1Database, provider: 
     .first<{
       id: string;
       userId: string;
-      provider: string;
+      provider: AuthProvider;
       providerSubject: string;
       email: string;
       emailVerified: number;
@@ -113,7 +118,7 @@ export async function listAuthAccountsByUserId(db: D1Database, userId: string) {
     .all<{
       id: string;
       userId: string;
-      provider: string;
+      provider: AuthProvider;
       providerSubject: string;
       email: string;
       emailVerified: number;
