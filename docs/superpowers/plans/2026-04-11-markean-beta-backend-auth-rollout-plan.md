@@ -63,7 +63,7 @@
 - Modify: `apps/api/src/env.ts`
   - Add typed auth secrets and app URLs.
 - Modify: `apps/api/wrangler.jsonc`
-  - Add env sections and auth-related vars.
+  - Add auth-related vars without introducing a broken partial `env.prod` binding set.
 
 ### Shared client and web
 
@@ -108,31 +108,45 @@ import { describe, expect, it } from "vitest";
 import { resolveAuthConfig } from "../src/lib/auth/config";
 
 describe("resolveAuthConfig", () => {
-  it("derives callback URLs and TTLs from env", () => {
-    const config = resolveAuthConfig({
-      APP_ENV: "prod",
-      APP_BASE_URL: "https://markean.mizutani.top",
-      API_BASE_URL: "https://api-markean.mizutani.top",
-      GOOGLE_CLIENT_ID: "google-client",
-      GOOGLE_CLIENT_SECRET: "google-secret",
-      APPLE_CLIENT_ID: "apple-client",
-      APPLE_TEAM_ID: "team-id",
-      APPLE_KEY_ID: "key-id",
-      APPLE_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
-      MAGIC_LINK_SECRET: "magic-secret",
-      MAGIC_LINK_TTL_MINUTES: "20",
-      EMAIL_FROM: "Markean <login@mizutani.top>",
-      RESEND_API_KEY: "re_test_123",
-    });
+  const baseEnv = {
+    APP_ENV: "prod",
+    APP_BASE_URL: "https://markean.mizutani.top/",
+    API_BASE_URL: "https://api-markean.mizutani.top/",
+    GOOGLE_CLIENT_ID: "google-client",
+    GOOGLE_CLIENT_SECRET: "google-secret",
+    APPLE_CLIENT_ID: "apple-client",
+    APPLE_TEAM_ID: "team-id",
+    APPLE_KEY_ID: "key-id",
+    APPLE_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
+    MAGIC_LINK_SECRET: "magic-secret",
+    MAGIC_LINK_TTL_MINUTES: "20",
+    EMAIL_FROM: "Markean <login@mizutani.top>",
+    RESEND_API_KEY: "re_test_123",
+  } as const;
 
-    expect(config.google.callbackUrl).toBe(
-      "https://api-markean.mizutani.top/api/auth/google/callback",
-    );
-    expect(config.apple.callbackUrl).toBe(
-      "https://api-markean.mizutani.top/api/auth/apple/callback",
-    );
+  it("derives callback URLs and normalizes base URLs", () => {
+    const config = resolveAuthConfig(baseEnv);
+
+    expect(config.google.callbackUrl).toBe("https://api-markean.mizutani.top/api/auth/google/callback");
+    expect(config.apple.callbackUrl).toBe("https://api-markean.mizutani.top/api/auth/apple/callback");
+    expect(config.appBaseUrl).toBe("https://markean.mizutani.top");
+    expect(config.apiBaseUrl).toBe("https://api-markean.mizutani.top");
     expect(config.magicLink.ttlMinutes).toBe(20);
     expect(config.session.cookieName).toBe("markean_session");
+  });
+
+  it("marks cookies secure only in prod", () => {
+    expect(resolveAuthConfig(baseEnv).session.cookieSecure).toBe(true);
+    expect(resolveAuthConfig({ ...baseEnv, APP_ENV: "dev" }).session.cookieSecure).toBe(false);
+  });
+
+  it("rejects invalid TTL values", () => {
+    expect(() => resolveAuthConfig({ ...baseEnv, MAGIC_LINK_TTL_MINUTES: "0" })).toThrow(
+      /MAGIC_LINK_TTL_MINUTES/,
+    );
+    expect(() => resolveAuthConfig({ ...baseEnv, MAGIC_LINK_TTL_MINUTES: "abc" })).toThrow(
+      /MAGIC_LINK_TTL_MINUTES/,
+    );
   });
 });
 ```
@@ -147,23 +161,36 @@ Expected: FAIL with `Cannot find module "../src/lib/auth/config"` or missing exp
 
 ```ts
 // apps/api/src/lib/auth/config.ts
-type AuthEnvShape = {
-  APP_ENV: "dev" | "prod";
-  APP_BASE_URL: string;
-  API_BASE_URL: string;
-  GOOGLE_CLIENT_ID: string;
-  GOOGLE_CLIENT_SECRET: string;
-  APPLE_CLIENT_ID: string;
-  APPLE_TEAM_ID: string;
-  APPLE_KEY_ID: string;
-  APPLE_PRIVATE_KEY: string;
-  MAGIC_LINK_SECRET: string;
-  MAGIC_LINK_TTL_MINUTES: string;
-  EMAIL_FROM: string;
-  RESEND_API_KEY: string;
-};
+import type { Env } from "../env";
 
-const stripTrailingSlash = (value: string) => value.replace(/\/$/, "");
+type AuthEnvShape = Pick<
+  Env,
+  | "APP_ENV"
+  | "APP_BASE_URL"
+  | "API_BASE_URL"
+  | "GOOGLE_CLIENT_ID"
+  | "GOOGLE_CLIENT_SECRET"
+  | "APPLE_CLIENT_ID"
+  | "APPLE_TEAM_ID"
+  | "APPLE_KEY_ID"
+  | "APPLE_PRIVATE_KEY"
+  | "MAGIC_LINK_SECRET"
+  | "MAGIC_LINK_TTL_MINUTES"
+  | "EMAIL_FROM"
+  | "RESEND_API_KEY"
+>;
+
+const stripTrailingSlash = (value: string) => value.replace(/\/+$/, "");
+
+function parsePositiveInteger(name: string, value: string) {
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+
+  return parsed;
+}
 
 export function resolveAuthConfig(env: AuthEnvShape) {
   const appBaseUrl = stripTrailingSlash(env.APP_BASE_URL);
@@ -191,7 +218,7 @@ export function resolveAuthConfig(env: AuthEnvShape) {
     },
     magicLink: {
       secret: env.MAGIC_LINK_SECRET,
-      ttlMinutes: Number(env.MAGIC_LINK_TTL_MINUTES),
+      ttlMinutes: parsePositiveInteger("MAGIC_LINK_TTL_MINUTES", env.MAGIC_LINK_TTL_MINUTES),
     },
     resend: {
       apiKey: env.RESEND_API_KEY,
@@ -246,6 +273,7 @@ CREATE TABLE beta_allowed_emails (
 ALTER TABLE sessions ADD COLUMN token_hash TEXT;
 ALTER TABLE sessions ADD COLUMN client_type TEXT NOT NULL DEFAULT 'web';
 ALTER TABLE sessions ADD COLUMN revoked_at TEXT;
+CREATE UNIQUE INDEX idx_sessions_token_hash ON sessions(token_hash) WHERE token_hash IS NOT NULL;
 
 CREATE TABLE magic_link_tokens (
   id TEXT PRIMARY KEY,
@@ -277,19 +305,11 @@ CREATE TABLE auth_codes (
     "APP_BASE_URL": "http://127.0.0.1:4173",
     "API_BASE_URL": "http://127.0.0.1:8787",
     "MAGIC_LINK_TTL_MINUTES": "20"
-  },
-  "env": {
-    "prod": {
-      "vars": {
-        "APP_ENV": "prod",
-        "APP_BASE_URL": "https://markean.mizutani.top",
-        "API_BASE_URL": "https://api-markean.mizutani.top",
-        "MAGIC_LINK_TTL_MINUTES": "20"
-      }
-    }
   }
 }
 ```
+
+Do not add an `env.prod` block in this task unless the full production binding set is present. A partial `env.prod` section would create a broken deploy shape for D1 and Durable Object bindings.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
