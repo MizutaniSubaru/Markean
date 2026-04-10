@@ -68,7 +68,6 @@ export const getUserForSession = async (db: D1Database, sessionId: string) => {
        FROM sessions
        INNER JOIN users ON users.id = sessions.user_id
        WHERE sessions.id = ?
-         AND sessions.revoked_at IS NULL
          AND sessions.expires_at > ?`,
     )
     .bind(sessionId, now)
