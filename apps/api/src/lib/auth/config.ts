@@ -1,20 +1,33 @@
-type AuthEnvShape = {
-  APP_ENV: "dev" | "prod";
-  APP_BASE_URL: string;
-  API_BASE_URL: string;
-  GOOGLE_CLIENT_ID: string;
-  GOOGLE_CLIENT_SECRET: string;
-  APPLE_CLIENT_ID: string;
-  APPLE_TEAM_ID: string;
-  APPLE_KEY_ID: string;
-  APPLE_PRIVATE_KEY: string;
-  MAGIC_LINK_SECRET: string;
-  MAGIC_LINK_TTL_MINUTES: string;
-  EMAIL_FROM: string;
-  RESEND_API_KEY: string;
-};
+import type { Env } from "../../env";
 
-const stripTrailingSlash = (value: string) => value.replace(/\/$/, "");
+type AuthEnvShape = Pick<
+  Env,
+  | "APP_ENV"
+  | "APP_BASE_URL"
+  | "API_BASE_URL"
+  | "GOOGLE_CLIENT_ID"
+  | "GOOGLE_CLIENT_SECRET"
+  | "APPLE_CLIENT_ID"
+  | "APPLE_TEAM_ID"
+  | "APPLE_KEY_ID"
+  | "APPLE_PRIVATE_KEY"
+  | "MAGIC_LINK_SECRET"
+  | "MAGIC_LINK_TTL_MINUTES"
+  | "EMAIL_FROM"
+  | "RESEND_API_KEY"
+>;
+
+const stripTrailingSlash = (value: string) => value.replace(/\/+$/, "");
+
+const parsePositiveInteger = (value: string, name: string) => {
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+
+  return parsed;
+};
 
 export function resolveAuthConfig(env: AuthEnvShape) {
   const appBaseUrl = stripTrailingSlash(env.APP_BASE_URL);
@@ -42,7 +55,7 @@ export function resolveAuthConfig(env: AuthEnvShape) {
     },
     magicLink: {
       secret: env.MAGIC_LINK_SECRET,
-      ttlMinutes: Number(env.MAGIC_LINK_TTL_MINUTES),
+      ttlMinutes: parsePositiveInteger(env.MAGIC_LINK_TTL_MINUTES, "MAGIC_LINK_TTL_MINUTES"),
     },
     resend: {
       apiKey: env.RESEND_API_KEY,

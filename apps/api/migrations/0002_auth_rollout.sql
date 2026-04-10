@@ -18,6 +18,9 @@ CREATE TABLE beta_allowed_emails (
 ALTER TABLE sessions ADD COLUMN token_hash TEXT;
 ALTER TABLE sessions ADD COLUMN client_type TEXT NOT NULL DEFAULT 'web';
 ALTER TABLE sessions ADD COLUMN revoked_at TEXT;
+CREATE UNIQUE INDEX sessions_token_hash_idx
+  ON sessions(token_hash)
+  WHERE token_hash IS NOT NULL;
 
 CREATE TABLE magic_link_tokens (
   id TEXT PRIMARY KEY,

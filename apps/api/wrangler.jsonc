@@ -23,16 +23,6 @@
       "new_sqlite_classes": ["SyncCoordinator"]
     }
   ],
-  "env": {
-    "prod": {
-      "vars": {
-        "APP_ENV": "prod",
-        "APP_BASE_URL": "https://markean.mizutani.top",
-        "API_BASE_URL": "https://api-markean.mizutani.top",
-        "MAGIC_LINK_TTL_MINUTES": "20"
-      }
-    }
-  },
   "d1_databases": [
     {
       "binding": "DB",
