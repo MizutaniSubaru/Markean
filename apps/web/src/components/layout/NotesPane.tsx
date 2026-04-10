@@ -31,56 +31,47 @@ export function NotesPane({
   onSelectNote,
 }: NotesPaneProps) {
   return (
-    <section className="pane pane--notes" aria-label="Notes">
-      <div className="pane__toolbar pane__toolbar--notes">
-        <div>
-          <p className="pane__eyebrow">Library</p>
-          <h2 className="pane__title" id="notes-title">
-            {title}
-          </h2>
-          <p className="pane__subtitle">{subtitle}</p>
+    <div className="notes-pane-container">
+      <div className="list-header">
+        <div>{title}</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: '13px', fontWeight: 'normal', color: 'var(--text-secondary)' }}>{subtitle}</span>
+          <button onClick={onCreateNote} aria-label="New note" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--apple-blue)' }}>
+            <ComposeIcon />
+          </button>
         </div>
-        <button className="pane-icon-button" type="button" aria-label="New note" onClick={onCreateNote}>
-          <ComposeIcon className="pane-icon-button__icon" />
-        </button>
       </div>
-
-      <div className="pane__body">
-        {sections.length === 0 ? (
-          <div className="empty-state">
-            <p className="empty-state__title">No matching notes yet.</p>
-            <p className="empty-state__copy">Try another search or create a new note in this workspace.</p>
-          </div>
-        ) : (
-          <div className="notes-groups">
-            {sections.map((section) => (
-              <section className="notes-group" key={section.label} aria-label={section.label}>
-                <h3 className="notes-group__title">{section.label}</h3>
-                <ul className="note-list">
-                  {section.items.map((note) => (
-                    <li key={note.id}>
-                      <button
-                        className="note-row"
-                        type="button"
-                        data-active={note.id === activeNoteId ? "true" : undefined}
-                        onClick={() => onSelectNote(note.id)}
-                      >
-                        <span className="note-row__time">{note.timeLabel}</span>
-                        <span className="note-row__title">{note.title}</span>
-                        <span className="note-row__summary">{note.summary}</span>
-                        <span className="note-row__meta">
-                          <NoteIcon className="note-row__icon" />
-                          <span>{note.folderName ?? "Markdown"}</span>
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
+      
+      {sections.length === 0 ? (
+        <div style={{ padding: '20px', color: 'var(--text-secondary)', textAlign: 'center', fontSize: '14px' }}>
+          No notes here yet.
+        </div>
+      ) : (
+        sections.map((section) => (
+          <div key={section.label}>
+            <div style={{ padding: '4px 20px', fontSize: '12px', fontWeight: 'bold', color: 'var(--text-secondary)', background: '#fcfcfc', borderBottom: '0.5px solid var(--divider-color)', borderTop: '0.5px solid var(--divider-color)' }}>
+              {section.label}
+            </div>
+            {section.items.map((note) => (
+              <button 
+                key={note.id} 
+                className={`note-item ${note.id === activeNoteId ? 'active' : ''}`}
+                onClick={() => onSelectNote(note.id)}
+                style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '12px 20px', fontFamily: 'inherit' }}
+              >
+                <div className="note-title">{note.title}</div>
+                <div className="note-line2">
+                  <span className="note-time">{note.timeLabel}</span>
+                  <span className="note-snippet">{note.summary}</span>
+                </div>
+                <div className="note-folder">
+                  📁 {note.folderName ?? "Markdown"}
+                </div>
+              </button>
             ))}
           </div>
-        )}
-      </div>
-    </section>
+        ))
+      )}
+    </div>
   );
 }

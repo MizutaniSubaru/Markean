@@ -94,3 +94,76 @@ body {
 .sidebar-icon {
   color: var(--apple-blue);
 }
+
+.notes-pane-container {
+  overflow-y: auto;
+  height: 100%;
+}
+.list-header {
+  padding: 20px;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.note-item {
+  padding: 12px 20px;
+  border-bottom: 0.5px solid transparent;
+  position: relative;
+  cursor: pointer;
+}
+
+.note-item.active {
+  background: #e6f2ff;
+}
+
+.note-item.active .note-time,
+.note-item.active .note-snippet,
+.note-item.active .note-folder {
+  color: #004f99;
+}
+
+
+.note-item::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 20px;
+  right: 0;
+  height: 0.5px;
+  background: var(--divider-color);
+}
+.note-item:last-child::after {
+  display: none;
+}
+
+.note-title {
+  font-weight: 600;
+  font-size: 15px;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.note-line2 {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.note-time { flex-shrink: 0; }
+.note-snippet {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.note-folder {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
