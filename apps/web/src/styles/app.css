@@ -167,3 +167,62 @@ body {
   align-items: center;
   gap: 4px;
 }
+
+.editor-toolbar {
+  height: 52px;
+  border-bottom: 0.5px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.search-box {
+  background: #efefef;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 13px;
+  width: 150px;
+}
+
+.editor-content-area {
+  flex: 1;
+  padding: 40px 60px;
+  overflow-y: auto;
+}
+
+/* CodeMirror Custom Theme Overrides */
+.cm-editor {
+  height: 100%;
+  outline: none !important;
+  font-family: inherit;
+  font-size: 17px;
+}
+.cm-editor.cm-focused {
+  outline: none;
+}
+.cm-line {
+  padding: 0;
+  line-height: 1.6;
+}
+.cm-content {
+  padding: 0;
+}
+/* Live Preview Markdown Styles */
+.cm-md-header {
+  font-weight: 700;
+  font-size: 32px;
+  margin-top: 10px;
+  margin-bottom: 10px;
+}
+.cm-md-symbol {
+  color: var(--border-color);
+  opacity: 0.5;
+}
