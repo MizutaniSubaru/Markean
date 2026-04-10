@@ -348,6 +348,7 @@ export function AppShell() {
         />
       </section>
       <main className="pane-editor">
+        <SyncBadge />
         <EditorPane
           note={activeNote}
           previewMode={previewMode}
