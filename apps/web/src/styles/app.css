@@ -37,3 +37,32 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background-color: rgba(0, 0, 0, 0.4);
 }
+
+.three-pane-layout {
+  display: grid;
+  grid-template-columns: 250px 320px 1fr;
+  height: 100vh;
+  width: 100vw;
+}
+
+.pane-sidebar {
+  background: var(--sidebar-bg);
+  backdrop-filter: blur(20px) saturate(180%);
+  border-right: 0.5px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+}
+
+.pane-notes-list {
+  background: var(--list-bg);
+  border-right: 0.5px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+}
+
+.pane-editor {
+  background: var(--editor-bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
