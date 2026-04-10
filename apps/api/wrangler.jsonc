@@ -1,4 +1,10 @@
 {
+  "vars": {
+    "APP_ENV": "dev",
+    "APP_BASE_URL": "http://127.0.0.1:4173",
+    "API_BASE_URL": "http://127.0.0.1:8787",
+    "MAGIC_LINK_TTL_MINUTES": "20"
+  },
   "name": "markean-api",
   "main": "src/index.ts",
   "compatibility_date": "2026-04-07",
@@ -17,6 +23,16 @@
       "new_sqlite_classes": ["SyncCoordinator"]
     }
   ],
+  "env": {
+    "prod": {
+      "vars": {
+        "APP_ENV": "prod",
+        "APP_BASE_URL": "https://markean.mizutani.top",
+        "API_BASE_URL": "https://api-markean.mizutani.top",
+        "MAGIC_LINK_TTL_MINUTES": "20"
+      }
+    }
+  },
   "d1_databases": [
     {
       "binding": "DB",
