@@ -20,7 +20,7 @@ export function buildAppleAuthorizationUrl(
   url.searchParams.set("redirect_uri", config.callbackUrl);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("response_mode", "form_post");
-  url.searchParams.set("scope", "openid email");
+  url.searchParams.set("scope", "email");
   url.searchParams.set("state", input.state);
   return url.toString();
 }

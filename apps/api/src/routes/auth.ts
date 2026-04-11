@@ -6,7 +6,7 @@ import { buildAppleAuthorizationUrl, fetchAppleIdentity } from "../lib/auth/prov
 import { buildGoogleAuthorizationUrl, fetchGoogleIdentity } from "../lib/auth/providers/google";
 import { sendMagicLinkEmail } from "../lib/email/resend";
 import { isEmailAllowed } from "../lib/repos/beta-allowed-emails";
-import { upsertAuthAccount } from "../lib/repos/auth-accounts";
+import { getAuthAccountByProviderSubject, upsertAuthAccount } from "../lib/repos/auth-accounts";
 import { createAuthCode } from "../lib/repos/auth-codes";
 import { consumeMagicLinkToken, createMagicLinkToken } from "../lib/repos/magic-link-tokens";
 import { createSession } from "../lib/repos/sessions";
@@ -205,7 +205,8 @@ const createOAuthSuccessResponse = async (
     );
   }
 
-  const userId = await ensureUserByEmail(db, email);
+  const linkedAccount = await getAuthAccountByProviderSubject(db, input.provider, input.providerSubject);
+  const userId = linkedAccount?.userId ?? (await ensureUserByEmail(db, email));
   await upsertAuthAccount(db, {
     userId,
     provider: input.provider,

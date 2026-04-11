@@ -132,6 +132,14 @@ function decodeState(state: string) {
   ) as { provider: string; clientType: "web" | "mobile"; redirectTarget: string };
 }
 
+function encodeBase64UrlJson(value: unknown) {
+  const json = JSON.stringify(value);
+  return btoa(json)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
 describe("oauth auth routes", () => {
   beforeAll(async () => {
     for (const statement of migrationStatements) {
@@ -243,6 +251,96 @@ describe("oauth auth routes", () => {
     });
   });
 
+  it("reuses the canonical linked Google user when the callback email changes", async () => {
+    const linkedUserId = "user_linked_google";
+    const linkedEmail = "linked-google@example.com";
+    const updatedEmail = "linked-google-new@example.com";
+
+    await allowEmail(db, updatedEmail);
+    await db
+      .prepare("INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)")
+      .bind(linkedUserId, linkedEmail, new Date().toISOString())
+      .run();
+    await db
+      .prepare(
+        "INSERT INTO auth_accounts (id, user_id, provider, provider_subject, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        "aa_linked_google",
+        linkedUserId,
+        "google",
+        googleSubject,
+        linkedEmail,
+        1,
+        new Date().toISOString(),
+        new Date().toISOString(),
+      )
+      .run();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+
+        if (url === "https://oauth2.googleapis.com/token") {
+          return new Response(JSON.stringify({ access_token: "google-access-token" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        if (url === "https://openidconnect.googleapis.com/v1/userinfo") {
+          expect(init?.headers).toMatchObject({
+            authorization: "Bearer google-access-token",
+          });
+          return new Response(
+            JSON.stringify({
+              sub: googleSubject,
+              email: updatedEmail,
+              email_verified: true,
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        }
+
+        throw new Error(`Unexpected fetch: ${url}`);
+      }) as unknown as typeof fetch,
+    );
+
+    const start = await worker.fetch(
+      new Request("https://example.com/api/auth/google/start?clientType=web&redirectTarget=%2Fdashboard"),
+      baseEnv,
+    );
+    const state = new URL(getLocation(start)).searchParams.get("state") ?? "";
+
+    const callback = await worker.fetch(
+      new Request(
+        `https://example.com/api/auth/google/callback?code=google-code-123&state=${encodeURIComponent(state)}`,
+      ),
+      baseEnv,
+    );
+
+    expect(callback.status).toBe(302);
+
+    const sessionRow = await db
+      .prepare("SELECT user_id AS userId FROM sessions WHERE client_type = ? ORDER BY created_at DESC LIMIT 1")
+      .bind("web")
+      .first<{ userId: string }>();
+    expect(sessionRow?.userId).toBe(linkedUserId);
+
+    const accountRow = await db
+      .prepare("SELECT user_id AS userId, email FROM auth_accounts WHERE provider = ? AND provider_subject = ?")
+      .bind("google", googleSubject)
+      .first<{ userId: string; email: string }>();
+    expect(accountRow).toMatchObject({
+      userId: linkedUserId,
+      email: updatedEmail,
+    });
+  });
+
   it("redirects Apple start requests to Sign in with Apple", async () => {
     const response = await worker.fetch(
       new Request("https://example.com/api/auth/apple/start?clientType=mobile&redirectTarget=myapp%3A%2F%2Fauth"),
@@ -255,11 +353,102 @@ describe("oauth auth routes", () => {
     expect(url.searchParams.get("client_id")).toBe(baseEnv.APPLE_CLIENT_ID);
     expect(url.searchParams.get("response_type")).toBe("code");
     expect(url.searchParams.get("response_mode")).toBe("form_post");
-    expect(url.searchParams.get("scope")).toBe("openid email");
+    expect(url.searchParams.get("scope")).toBe("email");
     expect(decodeState(url.searchParams.get("state") ?? "")).toMatchObject({
       provider: "apple",
       clientType: "mobile",
       redirectTarget: "myapp://auth",
+    });
+  });
+
+  it("reuses the canonical linked Apple user when the callback email changes", async () => {
+    const linkedUserId = "user_linked_apple";
+    const linkedEmail = "linked-apple@example.com";
+    const updatedEmail = "linked-apple-new@example.com";
+
+    await allowEmail(db, updatedEmail);
+    await db
+      .prepare("INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)")
+      .bind(linkedUserId, linkedEmail, new Date().toISOString())
+      .run();
+    await db
+      .prepare(
+        "INSERT INTO auth_accounts (id, user_id, provider, provider_subject, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        "aa_linked_apple",
+        linkedUserId,
+        "apple",
+        appleSubject,
+        linkedEmail,
+        1,
+        new Date().toISOString(),
+        new Date().toISOString(),
+      )
+      .run();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+
+        if (url === "https://appleid.apple.com/auth/token") {
+          return new Response(
+            JSON.stringify({
+              id_token: [
+                "eyJhbGciOiJFUzI1NiIsImtpZCI6ImV4YW1wbGUiLCJ0eXAiOiJKV1QifQ",
+                encodeBase64UrlJson({
+                  sub: appleSubject,
+                  email: updatedEmail,
+                  email_verified: "true",
+                }),
+                "signature",
+              ].join("."),
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        }
+
+        throw new Error(`Unexpected fetch: ${url}`);
+      }) as unknown as typeof fetch,
+    );
+
+    const start = await worker.fetch(
+      new Request("https://example.com/api/auth/apple/start?clientType=mobile&redirectTarget=myapp%3A%2F%2Fauth"),
+      baseEnv,
+    );
+    const state = new URL(getLocation(start)).searchParams.get("state") ?? "";
+
+    const callback = await worker.fetch(
+      new Request("https://example.com/api/auth/apple/callback", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          code: "apple-code-123",
+          state,
+        }).toString(),
+      }),
+      baseEnv,
+    );
+
+    expect(callback.status).toBe(302);
+
+    const authCodeRow = await db
+      .prepare("SELECT user_id AS userId FROM auth_codes WHERE provider = ? ORDER BY created_at DESC LIMIT 1")
+      .bind("apple")
+      .first<{ userId: string }>();
+    expect(authCodeRow?.userId).toBe(linkedUserId);
+
+    const accountRow = await db
+      .prepare("SELECT user_id AS userId, email FROM auth_accounts WHERE provider = ? AND provider_subject = ?")
+      .bind("apple", appleSubject)
+      .first<{ userId: string; email: string }>();
+    expect(accountRow).toMatchObject({
+      userId: linkedUserId,
+      email: updatedEmail,
     });
   });
 
