@@ -9,10 +9,61 @@ import { consumeMagicLinkToken, createMagicLinkToken } from "../lib/repos/magic-
 import { createSession } from "../lib/repos/sessions";
 
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
-const normalizeRedirectTarget = (value?: string) => {
+const INVALID_REDIRECT_TARGET = {
+  code: "invalid_redirect_target",
+  message: "Redirect target is invalid",
+} as const;
+
+const invalidRedirectTarget = () => ({
+  ok: false as const,
+});
+
+const validRedirectTarget = (redirectTarget: string) => ({
+  ok: true as const,
+  redirectTarget,
+});
+
+const validateWebRedirectTarget = (value?: string) => {
   const trimmed = value?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : "/";
+
+  if (!trimmed) {
+    return validRedirectTarget("/");
+  }
+
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//") || trimmed.includes("\\")) {
+    return invalidRedirectTarget();
+  }
+
+  return validRedirectTarget(trimmed);
 };
+
+const validateMobileRedirectTarget = (value?: string) => {
+  const trimmed = value?.trim();
+
+  if (!trimmed) {
+    return invalidRedirectTarget();
+  }
+
+  try {
+    const url = new URL(trimmed);
+    if (
+      url.protocol === "http:" ||
+      url.protocol === "https:" ||
+      url.protocol === "javascript:" ||
+      url.protocol === "data:" ||
+      url.protocol === "vbscript:"
+    ) {
+      return invalidRedirectTarget();
+    }
+  } catch {
+    return invalidRedirectTarget();
+  }
+
+  return validRedirectTarget(trimmed);
+};
+
+const validateRedirectTarget = (clientType: "web" | "mobile", value?: string) =>
+  clientType === "web" ? validateWebRedirectTarget(value) : validateMobileRedirectTarget(value);
 
 const sessionCookieValue = (config: ReturnType<typeof resolveAuthConfig>, token: string) => {
   const parts = [
@@ -30,17 +81,13 @@ const sessionCookieValue = (config: ReturnType<typeof resolveAuthConfig>, token:
 };
 
 const resolveWebRedirect = (appBaseUrl: string, redirectTarget: string) => {
-  const target = normalizeRedirectTarget(redirectTarget);
-  const relativeTarget = target.startsWith("/") ? target : `/${target}`;
-  return new URL(relativeTarget, appBaseUrl).toString();
+  return new URL(redirectTarget, appBaseUrl).toString();
 };
 
 const resolveMobileRedirect = (redirectTarget: string, code: string) => {
-  const target = normalizeRedirectTarget(redirectTarget);
-  const isAbsolute = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(target);
-  const url = new URL(target, "http://markean.invalid");
+  const url = new URL(redirectTarget);
   url.searchParams.set("code", code);
-  return isAbsolute ? url.toString() : `${url.pathname}${url.search}${url.hash}`;
+  return url.toString();
 };
 
 const ensureUserByEmail = async (db: D1Database, email: string) => {
@@ -76,6 +123,11 @@ export const authRoutes = new Hono<{ Bindings: Env }>()
 
     const email = normalizeEmail(body.email);
     const db = getDb(c.env);
+    const validatedRedirectTarget = validateRedirectTarget(body.clientType, body.redirectTarget);
+
+    if (!validatedRedirectTarget.ok) {
+      return c.json(INVALID_REDIRECT_TARGET, 400);
+    }
 
     if (!(await isEmailAllowed(db, email))) {
       return c.json(
@@ -88,7 +140,7 @@ export const authRoutes = new Hono<{ Bindings: Env }>()
     const token = await createMagicLinkToken(db, {
       email,
       clientType: body.clientType,
-      redirectTarget: normalizeRedirectTarget(body.redirectTarget),
+      redirectTarget: validatedRedirectTarget.redirectTarget,
       ttlMs: config.magicLink.ttlMinutes * 60_000,
     });
     const verificationUrl = `${config.apiBaseUrl}/api/auth/email/verify?token=${encodeURIComponent(token.token)}`;
@@ -112,6 +164,15 @@ export const authRoutes = new Hono<{ Bindings: Env }>()
       return c.json({ code: "invalid_magic_link", message: "Magic link is invalid or expired" }, 400);
     }
 
+    const validatedRedirectTarget = validateRedirectTarget(
+      consumed.clientType,
+      consumed.redirectTarget,
+    );
+
+    if (!validatedRedirectTarget.ok) {
+      return c.json(INVALID_REDIRECT_TARGET, 400);
+    }
+
     const userId = await ensureUserByEmail(db, consumed.email);
 
     if (consumed.clientType === "web") {
@@ -122,7 +183,7 @@ export const authRoutes = new Hono<{ Bindings: Env }>()
       });
 
       c.header("set-cookie", sessionCookieValue(config, session.token));
-      return c.redirect(resolveWebRedirect(config.appBaseUrl, consumed.redirectTarget));
+      return c.redirect(resolveWebRedirect(config.appBaseUrl, validatedRedirectTarget.redirectTarget));
     }
 
     const authCode = await createAuthCode(db, {
@@ -131,5 +192,5 @@ export const authRoutes = new Hono<{ Bindings: Env }>()
       ttlMs: 300_000,
     });
 
-    return c.redirect(resolveMobileRedirect(consumed.redirectTarget, authCode.value));
+    return c.redirect(resolveMobileRedirect(validatedRedirectTarget.redirectTarget, authCode.value));
   });

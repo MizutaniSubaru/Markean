@@ -76,6 +76,29 @@ export const getUserForSession = async (db: D1Database, sessionId: string) => {
   return result ?? null;
 };
 
+export const getUserForSessionCookieValue = async (db: D1Database, cookieValue: string) => {
+  const legacySessionUser = await getUserForSession(db, cookieValue);
+
+  if (legacySessionUser) {
+    return legacySessionUser;
+  }
+
+  if (!cookieValue.startsWith("ms_")) {
+    return null;
+  }
+
+  const tokenSession = await getSessionByToken(db, cookieValue);
+
+  if (!tokenSession || tokenSession.clientType !== "web") {
+    return null;
+  }
+
+  return {
+    id: tokenSession.userId,
+    email: tokenSession.email,
+  };
+};
+
 export async function getSessionByToken(db: D1Database, token: string) {
   const tokenHash = await hashOpaqueToken(token);
   const result = await db

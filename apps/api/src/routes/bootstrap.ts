@@ -3,17 +3,17 @@ import type { Env } from "../env";
 import { getDb } from "../lib/db";
 import { listFoldersByUserId } from "../lib/repos/folders";
 import { getLatestSyncCursorForUser, listNotesByUserId } from "../lib/repos/notes";
-import { getSessionIdFromCookie, getUserForSession } from "../lib/repos/sessions";
+import { getSessionIdFromCookie, getUserForSessionCookieValue } from "../lib/repos/sessions";
 
 export const bootstrapRoutes = new Hono<{ Bindings: Env }>().get("/api/bootstrap", async (c) => {
-  const sessionId = getSessionIdFromCookie(c.req.header("cookie"));
+  const sessionCookieValue = getSessionIdFromCookie(c.req.header("cookie"));
 
-  if (!sessionId) {
+  if (!sessionCookieValue) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
   const db = getDb(c.env);
-  const user = await getUserForSession(db, sessionId);
+  const user = await getUserForSessionCookieValue(db, sessionCookieValue);
 
   if (!user) {
     return c.json({ error: "Unauthorized" }, 401);

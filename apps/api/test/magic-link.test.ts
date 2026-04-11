@@ -44,6 +44,39 @@ const migrationStatements = [
     consumed_at TEXT,
     created_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS folders (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS notes (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body_md TEXT NOT NULL,
+    body_plain TEXT NOT NULL,
+    current_revision INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS sync_events (
+    cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    revision_number INTEGER NOT NULL,
+    client_change_id TEXT NOT NULL,
+    source_device_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
 ];
 
 const baseEnv = {
@@ -89,6 +122,9 @@ describe("magic-link auth routes", () => {
     await db.prepare("DELETE FROM beta_allowed_emails").run();
     await db.prepare("DELETE FROM magic_link_tokens").run();
     await db.prepare("DELETE FROM auth_codes").run();
+    await db.prepare("DELETE FROM folders").run();
+    await db.prepare("DELETE FROM notes").run();
+    await db.prepare("DELETE FROM sync_events").run();
     await allowEmail(db, approvedEmail);
   });
 
@@ -199,6 +235,21 @@ describe("magic-link auth routes", () => {
     const sessionToken = cookie?.match(/markean_session=([^;]+)/)?.[1];
     expect(sessionToken).toBeTruthy();
 
+    const bootstrapResponse = await worker.fetch(
+      new Request("https://example.com/api/bootstrap", {
+        headers: { cookie: cookie ?? "" },
+      }),
+      baseEnv,
+    );
+
+    expect(bootstrapResponse.status).toBe(200);
+    await expect(bootstrapResponse.json()).resolves.toMatchObject({
+      user: { email: approvedEmail },
+      folders: [],
+      notes: [],
+      syncCursor: 0,
+    });
+
     const sessionRow = await db
       .prepare(
         "SELECT user_id AS userId, token_hash AS tokenHash, client_type AS clientType FROM sessions LIMIT 1",
@@ -215,6 +266,36 @@ describe("magic-link auth routes", () => {
       .bind(approvedEmail)
       .first<{ email: string }>();
     expect(userRow).toMatchObject({ email: approvedEmail });
+  });
+
+  it("rejects unsafe web redirect targets with a stable 400 payload", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const response = await worker.fetch(
+      new Request("https://example.com/api/auth/email/request", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          email: approvedEmail,
+          clientType: "web",
+          redirectTarget: "//evil.com/phish",
+        }),
+      }),
+      baseEnv,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "invalid_redirect_target",
+      message: "Redirect target is invalid",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const tokenCount = await db
+      .prepare("SELECT COUNT(*) AS count FROM magic_link_tokens")
+      .first<{ count: number }>();
+    expect(tokenCount?.count).toBe(0);
   });
 
   it("creates a mobile auth code and appends it safely to the redirect target", async () => {
@@ -297,5 +378,34 @@ describe("magic-link auth routes", () => {
       provider: "magic_link",
     });
     expect(authCodeRow?.codeHash).toBe(await hashOpaqueToken(code ?? ""));
+  });
+
+  it("rejects mobile magic-link requests without an explicit redirect target", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const response = await worker.fetch(
+      new Request("https://example.com/api/auth/email/request", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          email: approvedEmail,
+          clientType: "mobile",
+        }),
+      }),
+      baseEnv,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "invalid_redirect_target",
+      message: "Redirect target is invalid",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const tokenCount = await db
+      .prepare("SELECT COUNT(*) AS count FROM magic_link_tokens")
+      .first<{ count: number }>();
+    expect(tokenCount?.count).toBe(0);
   });
 });
