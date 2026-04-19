@@ -1,6 +1,5 @@
 import { useI18n } from "../../i18n";
 import type { SyncStatus, WorkspaceNote } from "../../lib/storage";
-// @ts-expect-error Task 11 introduces this component.
 import { MarkeanEditor } from "../editor/MarkeanEditor";
 import { EmptyNoteIcon, SyncIcon } from "../shared/Icons";
 
