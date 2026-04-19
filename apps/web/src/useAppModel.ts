@@ -336,7 +336,10 @@ export function useAppModel() {
   };
 
   const createNote = () => {
-    const folderId = workspace.activeFolderId || workspace.folders[0]?.id;
+    const folderId =
+      isMobile && mobileView === "folders"
+        ? workspace.folders[0]?.id
+        : activeFolder?.id ?? workspace.activeFolderId ?? workspace.folders[0]?.id;
     if (!folderId) {
       return;
     }
@@ -359,6 +362,7 @@ export function useAppModel() {
         ...current.notes,
       ],
     }));
+    setSearchQuery("");
     setNewNoteId(noteId);
     markLocalUnsynced();
     setMobileView("editor");

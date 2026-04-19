@@ -77,6 +77,10 @@ function installStorageMock() {
   return storage;
 }
 
+function seedWorkspace(storage: ReturnType<typeof installStorageMock>, snapshot: unknown) {
+  storage.setItem("markean:workspace", JSON.stringify(snapshot));
+}
+
 describe("App", () => {
   let storage: ReturnType<typeof installStorageMock>;
 
@@ -163,6 +167,69 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(storage.getItem("markean:sync-status")).toBe("unsynced");
+    });
+  });
+
+  it("clears search and keeps a newly created note visible when creating from desktop search results", async () => {
+    mockMatchMedia({ matches: false });
+
+    render(<App />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), {
+      target: { value: "welcome" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "New Note" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("searchbox", { name: "Search" })).toHaveValue("");
+    });
+
+    expect(screen.getByText("2 notes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /untitled/i })).toBeInTheDocument();
+
+    const persistedWorkspace = JSON.parse(storage.getItem("markean:workspace") ?? "{}");
+    expect(persistedWorkspace.activeFolderId).toBe("notes");
+    expect(persistedWorkspace.notes[0]).toMatchObject({
+      folderId: "notes",
+      title: "",
+      body: "",
+    });
+  });
+
+  it("creates a note in the first visible folder when composing from the mobile folders landing view", async () => {
+    seedWorkspace(storage, {
+      folders: [
+        { id: "inbox", name: "Inbox" },
+        { id: "archive", name: "Archive" },
+      ],
+      notes: [
+        {
+          id: "archive-note",
+          folderId: "archive",
+          title: "Archived note",
+          body: "# Archived note",
+          updatedAt: "2026-04-20T09:00:00.000Z",
+        },
+      ],
+      activeFolderId: "archive",
+      activeNoteId: "archive-note",
+    });
+    mockMatchMedia({ matches: true });
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "New Note" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Inbox" })).toBeInTheDocument();
+    });
+
+    const persistedWorkspace = JSON.parse(storage.getItem("markean:workspace") ?? "{}");
+    expect(persistedWorkspace.activeFolderId).toBe("inbox");
+    expect(persistedWorkspace.notes[0]).toMatchObject({
+      folderId: "inbox",
+      title: "",
+      body: "",
     });
   });
 });
