@@ -43,17 +43,22 @@ describe("Sidebar", () => {
   it("renders folder list with counts", () => {
     renderSidebar();
 
-    expect(screen.getByText("All Notes")).toBeTruthy();
-    expect(screen.getByText("Work")).toBeTruthy();
-    expect(screen.getByText("7")).toBeTruthy();
-    expect(screen.getByText("3")).toBeTruthy();
+    const allNotesButton = screen.getByRole("button", { name: /all notes/i });
+    const workButton = screen.getByRole("button", { name: /work/i });
+
+    expect(allNotesButton).toBeInstanceOf(HTMLButtonElement);
+    expect(workButton).toBeInstanceOf(HTMLButtonElement);
+    expect(allNotesButton.textContent).toContain("7");
+    expect(workButton.textContent).toContain("3");
+    expect(allNotesButton.getAttribute("aria-pressed")).toBe("true");
+    expect(workButton.getAttribute("aria-pressed")).toBe("false");
   });
 
   it("calls onSelectFolder when a folder is clicked", () => {
     const onSelectFolder = vi.fn();
     renderSidebar({ onSelectFolder });
 
-    fireEvent.click(screen.getByText("Work"));
+    fireEvent.click(screen.getByRole("button", { name: /work/i }));
 
     expect(onSelectFolder).toHaveBeenCalledWith("work");
   });
@@ -62,10 +67,19 @@ describe("Sidebar", () => {
     const onSearchChange = vi.fn();
     renderSidebar({ onSearchChange });
 
-    fireEvent.change(screen.getByPlaceholderText("Search"), {
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), {
       target: { value: "foo" },
     });
 
     expect(onSearchChange).toHaveBeenCalledWith("foo");
+  });
+
+  it("calls onCreateFolder when the new-folder button is clicked", () => {
+    const onCreateFolder = vi.fn();
+    renderSidebar({ onCreateFolder });
+
+    fireEvent.click(screen.getByRole("button", { name: "New Folder" }));
+
+    expect(onCreateFolder).toHaveBeenCalledTimes(1);
   });
 });

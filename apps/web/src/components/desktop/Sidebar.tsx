@@ -47,6 +47,8 @@ export function Sidebar({
       <div className="sidebar-search">
         <SearchIcon />
         <input
+          aria-label={t("sidebar.search")}
+          type="search"
           value={searchQuery}
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder={t("sidebar.search")}
@@ -57,9 +59,11 @@ export function Sidebar({
         {folders.map((folder) => {
           const isActive = folder.id === activeFolderId;
           return (
-            <div
+            <button
               key={folder.id}
+              type="button"
               className={`folder-item${isActive ? " active" : ""}`}
+              aria-pressed={isActive}
               onClick={() => onSelectFolder(folder.id)}
             >
               <div className="folder-icon">
@@ -67,7 +71,7 @@ export function Sidebar({
               </div>
               <span className="folder-name">{folder.name}</span>
               <span className="folder-count">{folder.count}</span>
-            </div>
+            </button>
           );
         })}
       </div>

@@ -44,6 +44,13 @@
   padding: 8px 12px 8px 14px;
   border-radius: 8px;
   margin: 1px 6px;
+  width: calc(100% - 12px);
+  border: none;
+  background: none;
+  appearance: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
   user-select: none;
   transition: background .12s;
