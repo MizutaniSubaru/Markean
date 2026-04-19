@@ -102,7 +102,11 @@ function formatNoteTitle(note: WorkspaceNote) {
     return trimmedTitle;
   }
 
-  const firstLine = note.body
+  return deriveTitleFromBody(note.body);
+}
+
+function deriveTitleFromBody(body: string) {
+  const firstLine = body
     .split(/\n+/)
     .map((line) => line.replace(/^#+\s*/, "").trim())
     .find(Boolean);
@@ -384,10 +388,11 @@ export function useAppModel() {
           ? {
               ...note,
               body,
+              title: deriveTitleFromBody(body),
               updatedAt,
             }
           : note,
-        ),
+      ),
     }));
     markLocalUnsynced();
   };

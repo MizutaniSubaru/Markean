@@ -111,7 +111,7 @@ describe("App", () => {
     expect(screen.getByText("Welcome to Markean")).toBeInTheDocument();
   });
 
-  it("persists draft, workspace snapshot, sync status, and document language when editing", async () => {
+  it("updates the visible and persisted note title when the body heading changes", async () => {
     mockMatchMedia({ matches: false });
 
     render(<App />);
@@ -134,9 +134,11 @@ describe("App", () => {
         expect.objectContaining({
           id: "welcome-note",
           body: "# Updated welcome note\n\nMore detail.",
+          title: "Updated welcome note",
         }),
       ],
     });
+    expect(screen.getByRole("button", { name: /updated welcome note/i })).toBeInTheDocument();
     expect(document.documentElement.lang).toBe("en");
   });
 
