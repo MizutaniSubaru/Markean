@@ -18,24 +18,22 @@ type MobileNoteListProps = {
   folderName: string;
   noteCount: number;
   sections: MobileNoteSection[];
-  activeNoteId: string;
   searchQuery: string;
   onBack: () => void;
   onSearchChange: (value: string) => void;
   onSelectNote: (noteId: string) => void;
-  onCompose: () => void;
+  onCreateNote: () => void;
 };
 
 export function MobileNoteList({
   folderName,
   noteCount,
   sections,
-  activeNoteId,
   searchQuery,
   onBack,
   onSearchChange,
   onSelectNote,
-  onCompose,
+  onCreateNote,
 }: MobileNoteListProps) {
   const { t } = useI18n();
 
@@ -45,7 +43,7 @@ export function MobileNoteList({
         <button
           type="button"
           className="mobile-nav-back"
-          aria-label="Back"
+          aria-label={t("mobile.folders")}
           onClick={onBack}
         >
           <BackIcon />
@@ -66,7 +64,6 @@ export function MobileNoteList({
                 key={note.id}
                 type="button"
                 className="mobile-note-card"
-                aria-pressed={activeNoteId === note.id}
                 onClick={() => onSelectNote(note.id)}
               >
                 <div className="mobile-note-card-title">{note.title}</div>
@@ -92,8 +89,8 @@ export function MobileNoteList({
         <button
           type="button"
           className="mobile-compose-btn"
-          aria-label="Compose"
-          onClick={onCompose}
+          aria-label={t("noteList.newNote")}
+          onClick={onCreateNote}
         >
           <ComposeIcon color="currentColor" />
         </button>

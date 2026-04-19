@@ -20,50 +20,45 @@ describe("mobile components", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders the folders landing view with grouped folders, bottom search, and compose", () => {
+  it("renders the folders landing view with a flat folders interface and localized create action", () => {
     const onSelectFolder = vi.fn();
     const onSearchChange = vi.fn();
-    const onCompose = vi.fn();
+    const onCreateNote = vi.fn();
 
     renderWithI18n(
       <MobileFolders
-        groups={[
-          {
-            label: "Pinned",
-            folders: [
-              { id: "inbox", name: "Inbox", count: 4 },
-              { id: "ideas", name: "Ideas", count: 2 },
-            ],
-          },
+        folders={[
+          { id: "inbox", name: "Inbox", count: 4 },
+          { id: "ideas", name: "Ideas", count: 2 },
         ]}
         searchQuery="wel"
         onSearchChange={onSearchChange}
         onSelectFolder={onSelectFolder}
-        onCompose={onCompose}
+        onCreateNote={onCreateNote}
       />,
     );
 
     expect(screen.getAllByText("Folders")).toHaveLength(2);
-    expect(screen.getByText("Pinned")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /inbox/i })).toHaveTextContent("4");
     expect(screen.getByRole("searchbox", { name: "Search" })).toHaveValue("wel");
+    expect(screen.getByRole("button", { name: "New Note" })).toBeInTheDocument();
 
     fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), {
       target: { value: "idea" },
     });
     fireEvent.click(screen.getByRole("button", { name: /ideas/i }));
-    fireEvent.click(screen.getByRole("button", { name: /compose/i }));
+    fireEvent.click(screen.getByRole("button", { name: "New Note" }));
 
     expect(onSearchChange).toHaveBeenCalledWith("idea");
     expect(onSelectFolder).toHaveBeenCalledWith("ideas");
-    expect(onCompose).toHaveBeenCalledTimes(1);
+    expect(onCreateNote).toHaveBeenCalledTimes(1);
   });
 
-  it("renders the folder notes view with navigation, count, sections, search, and compose", () => {
+  it("renders the folder notes view without requiring active note state and uses localized create action", () => {
     const onBack = vi.fn();
     const onSelectNote = vi.fn();
     const onSearchChange = vi.fn();
-    const onCompose = vi.fn();
+    const onCreateNote = vi.fn();
 
     renderWithI18n(
       <MobileNoteList
@@ -88,37 +83,35 @@ describe("mobile components", () => {
             ],
           },
         ]}
-        activeNoteId="n1"
         searchQuery=""
         onBack={onBack}
         onSearchChange={onSearchChange}
         onSelectNote={onSelectNote}
-        onCompose={onCompose}
+        onCreateNote={onCreateNote}
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Back" })).toBeInTheDocument();
     expect(screen.getAllByText("Inbox")).toHaveLength(2);
     expect(screen.getByText("2 notes")).toBeInTheDocument();
     expect(screen.getByText("Last 7 Days")).toBeInTheDocument();
     expect(screen.getByText("This is the first note")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New Note" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.click(screen.getAllByRole("button")[0]);
     fireEvent.click(screen.getByRole("button", { name: /daily log/i }));
     fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), {
       target: { value: "welcome" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /compose/i }));
+    fireEvent.click(screen.getByRole("button", { name: "New Note" }));
 
     expect(onBack).toHaveBeenCalledTimes(1);
     expect(onSelectNote).toHaveBeenCalledWith("n2");
     expect(onSearchChange).toHaveBeenCalledWith("welcome");
-    expect(onCompose).toHaveBeenCalledTimes(1);
+    expect(onCreateNote).toHaveBeenCalledTimes(1);
   });
 
-  it("renders the mobile editor with navigation chrome and the Markean editor", () => {
+  it("renders the mobile editor without requiring a done callback", () => {
     const onBack = vi.fn();
-    const onDone = vi.fn();
     const onChangeBody = vi.fn();
     const note: WorkspaceNote = {
       id: "n1",
@@ -133,21 +126,17 @@ describe("mobile components", () => {
         folderName="Inbox"
         note={note}
         onBack={onBack}
-        onDone={onDone}
         onChangeBody={onChangeBody}
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Back" })).toBeInTheDocument();
     expect(screen.getByText("Inbox")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
     expect(container.querySelector(".editor-content")).not.toBeNull();
     expect(container.textContent).toContain("Initial body");
 
-    fireEvent.click(screen.getByRole("button", { name: "Back" }));
-    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    fireEvent.click(screen.getAllByRole("button")[0]);
 
     expect(onBack).toHaveBeenCalledTimes(1);
-    expect(onDone).toHaveBeenCalledTimes(1);
   });
 });

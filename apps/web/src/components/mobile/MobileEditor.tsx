@@ -8,7 +8,6 @@ type MobileEditorProps = {
   folderName: string;
   note: WorkspaceNote;
   onBack: () => void;
-  onDone: () => void;
   onChangeBody: (body: string) => void;
 };
 
@@ -16,7 +15,6 @@ export function MobileEditor({
   folderName,
   note,
   onBack,
-  onDone,
   onChangeBody,
 }: MobileEditorProps) {
   const { t } = useI18n();
@@ -27,14 +25,14 @@ export function MobileEditor({
         <button
           type="button"
           className="mobile-nav-back"
-          aria-label="Back"
+          aria-label={folderName}
           onClick={onBack}
         >
           <BackIcon />
         </button>
         <div className="mobile-nav-title">{folderName}</div>
         <div className="mobile-nav-actions">
-          <button type="button" onClick={onDone}>
+          <button type="button" onClick={onBack}>
             {t("mobile.done")}
           </button>
         </div>

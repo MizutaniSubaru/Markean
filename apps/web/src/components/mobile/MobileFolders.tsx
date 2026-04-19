@@ -8,25 +8,20 @@ type MobileFolder = {
   count: number;
 };
 
-type MobileFolderGroup = {
-  label: string;
-  folders: MobileFolder[];
-};
-
 type MobileFoldersProps = {
-  groups: MobileFolderGroup[];
+  folders: MobileFolder[];
   searchQuery: string;
   onSearchChange: (value: string) => void;
   onSelectFolder: (folderId: string) => void;
-  onCompose: () => void;
+  onCreateNote: () => void;
 };
 
 export function MobileFolders({
-  groups,
+  folders,
   searchQuery,
   onSearchChange,
   onSelectFolder,
-  onCompose,
+  onCreateNote,
 }: MobileFoldersProps) {
   const { t } = useI18n();
 
@@ -40,27 +35,24 @@ export function MobileFolders({
 
       <div className="mobile-page">
         <div className="mobile-page-title">{t("mobile.folders")}</div>
-        {groups.map((group) => (
-          <div key={group.label} className="mobile-folder-group">
-            <div className="mobile-folder-group-label">{group.label}</div>
-            <div className="mobile-folder-card">
-              {group.folders.map((folder) => (
-                <button
-                  key={folder.id}
-                  type="button"
-                  className="mobile-folder-row"
-                  onClick={() => onSelectFolder(folder.id)}
-                >
-                  <span className="mobile-folder-row-name">{folder.name}</span>
-                  <span className="mobile-folder-row-count">{folder.count}</span>
-                  <span className="mobile-folder-row-chevron" aria-hidden="true">
-                    <ChevronIcon />
-                  </span>
-                </button>
-              ))}
-            </div>
+        <div className="mobile-folder-group">
+          <div className="mobile-folder-card">
+            {folders.map((folder) => (
+              <button
+                key={folder.id}
+                type="button"
+                className="mobile-folder-row"
+                onClick={() => onSelectFolder(folder.id)}
+              >
+                <span className="mobile-folder-row-name">{folder.name}</span>
+                <span className="mobile-folder-row-count">{folder.count}</span>
+                <span className="mobile-folder-row-chevron" aria-hidden="true">
+                  <ChevronIcon />
+                </span>
+              </button>
+            ))}
           </div>
-        ))}
+        </div>
       </div>
 
       <div className="mobile-bottom-bar">
@@ -77,8 +69,8 @@ export function MobileFolders({
         <button
           type="button"
           className="mobile-compose-btn"
-          aria-label="Compose"
-          onClick={onCompose}
+          aria-label={t("noteList.newNote")}
+          onClick={onCreateNote}
         >
           <ComposeIcon color="currentColor" />
         </button>
