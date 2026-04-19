@@ -73,7 +73,11 @@ describe("NoteList", () => {
       />,
     );
 
-    fireEvent.click(screen.getByText("Another Note"));
+    const noteTitle = screen.getByText("Another Note");
+    const noteCard = noteTitle.closest(".note-card");
+
+    expect(noteCard).not.toBeNull();
+    fireEvent.click(noteCard as HTMLElement);
 
     expect(onSelect).toHaveBeenCalledWith("n2");
   });
