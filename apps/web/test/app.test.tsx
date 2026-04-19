@@ -1,6 +1,16 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+let capturedBackgroundSyncRunOnce: (() => Promise<void>) | null = null;
+
+vi.mock("../src/lib/sync", () => ({
+  startBackgroundSync: vi.fn((runOnce: () => Promise<void>) => {
+    capturedBackgroundSyncRunOnce = runOnce;
+    return vi.fn();
+  }),
+}));
+
 vi.mock("../src/components/editor/MarkeanEditor", () => ({
   MarkeanEditor: ({
     content,
@@ -68,13 +78,16 @@ function installStorageMock() {
 }
 
 describe("App", () => {
+  let storage: ReturnType<typeof installStorageMock>;
+
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    capturedBackgroundSyncRunOnce = null;
   });
 
   beforeEach(() => {
-    installStorageMock();
+    storage = installStorageMock();
   });
 
   it("renders the desktop workspace with the welcome note on first load", () => {
@@ -96,5 +109,58 @@ describe("App", () => {
     fireEvent.click(screen.getByText("Notes"));
     expect(screen.getByText("1 notes")).toBeInTheDocument();
     expect(screen.getByText("Welcome to Markean")).toBeInTheDocument();
+  });
+
+  it("persists draft, workspace snapshot, sync status, and document language when editing", async () => {
+    mockMatchMedia({ matches: false });
+
+    render(<App />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Editor" }), {
+      target: { value: "# Updated welcome note\n\nMore detail." },
+    });
+
+    await waitFor(() => {
+      expect(storage.getItem("markean:draft:welcome-note")).toBe("# Updated welcome note\n\nMore detail.");
+      expect(storage.getItem("markean:sync-status")).toBe("unsynced");
+    });
+
+    const persistedWorkspace = storage.getItem("markean:workspace");
+    expect(persistedWorkspace).not.toBeNull();
+    expect(JSON.parse(persistedWorkspace ?? "{}")).toMatchObject({
+      activeFolderId: "notes",
+      activeNoteId: "welcome-note",
+      notes: [
+        expect.objectContaining({
+          id: "welcome-note",
+          body: "# Updated welcome note\n\nMore detail.",
+        }),
+      ],
+    });
+    expect(document.documentElement.lang).toBe("en");
+  });
+
+  it("keeps sync status unsynced if a user edit happens while background sync is in flight", async () => {
+    mockMatchMedia({ matches: false });
+
+    render(<App />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Editor" }), {
+      target: { value: "# First edit" },
+    });
+
+    expect(capturedBackgroundSyncRunOnce).not.toBeNull();
+
+    const syncPromise = capturedBackgroundSyncRunOnce?.();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Editor" }), {
+      target: { value: "# Second edit while syncing" },
+    });
+
+    await syncPromise;
+
+    await waitFor(() => {
+      expect(storage.getItem("markean:sync-status")).toBe("unsynced");
+    });
   });
 });
