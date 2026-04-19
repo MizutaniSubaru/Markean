@@ -56,6 +56,18 @@ describe("NoteList", () => {
     expect(screen.getByText("Test Note")).toBeInTheDocument();
     expect(screen.getByText("This is a preview")).toBeInTheDocument();
     expect(screen.getByText("Another Note")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /new note/i }),
+    ).toHaveAttribute("aria-label", "New Note");
+    expect(screen.getByRole("button", { name: /more actions/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /test note/i })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: /another note/i })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   });
 
   it("calls onSelectNote when a card is clicked", () => {
@@ -73,11 +85,7 @@ describe("NoteList", () => {
       />,
     );
 
-    const noteTitle = screen.getByText("Another Note");
-    const noteCard = noteTitle.closest(".note-card");
-
-    expect(noteCard).not.toBeNull();
-    fireEvent.click(noteCard as HTMLElement);
+    fireEvent.click(screen.getByRole("button", { name: /another note/i }));
 
     expect(onSelect).toHaveBeenCalledWith("n2");
   });
@@ -98,7 +106,7 @@ describe("NoteList", () => {
       },
     ];
 
-    const { container } = renderWithI18n(
+    renderWithI18n(
       <NoteList
         folderName="Search results"
         noteCount={1}
@@ -111,8 +119,6 @@ describe("NoteList", () => {
       />,
     );
 
-    const mark = container.querySelector("mark");
-    expect(mark).not.toBeNull();
-    expect(mark?.textContent).toBe("async");
+    expect(screen.getByText("async", { selector: "mark" })).toBeInTheDocument();
   });
 });

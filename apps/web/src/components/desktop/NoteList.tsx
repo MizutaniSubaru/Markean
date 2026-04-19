@@ -24,6 +24,7 @@ type NoteListProps = {
   newNoteId: string | null;
   onSelectNote: (noteId: string) => void;
   onCreateNote: () => void;
+  onOpenActions?: () => void;
 };
 
 function highlightText(text: string, query: string): ReactNode {
@@ -53,6 +54,7 @@ export function NoteList({
   newNoteId,
   onSelectNote,
   onCreateNote,
+  onOpenActions,
 }: NoteListProps) {
   const { t } = useI18n();
 
@@ -67,12 +69,20 @@ export function NoteList({
           <button
             type="button"
             className="icon-btn"
+            aria-label={t("noteList.newNote")}
             title={t("noteList.newNote")}
             onClick={onCreateNote}
           >
             <ComposeIcon />
           </button>
-          <button type="button" className="icon-btn">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="More actions"
+            title="More actions"
+            onClick={onOpenActions}
+            disabled={!onOpenActions}
+          >
             <MoreIcon />
           </button>
         </div>
@@ -96,9 +106,11 @@ export function NoteList({
           <div key={section.label}>
             <div className="note-group-label">{section.label}</div>
             {section.items.map((note) => (
-              <div
+              <button
+                type="button"
                 key={note.id}
                 className={`note-card${activeNoteId === note.id ? " active" : ""}${note.id === newNoteId ? " note-card-new" : ""}`}
+                aria-pressed={activeNoteId === note.id}
                 onClick={() => onSelectNote(note.id)}
               >
                 <div className="note-card-text">
@@ -126,7 +138,7 @@ export function NoteList({
                     </div>
                   )}
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         ))}
