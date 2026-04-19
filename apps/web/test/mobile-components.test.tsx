@@ -2,6 +2,22 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+vi.mock("../src/components/editor/MarkeanEditor", () => ({
+  MarkeanEditor: ({
+    content,
+    onChange,
+  }: {
+    content: string;
+    onChange: (nextContent: string) => void;
+  }) => (
+    <textarea
+      aria-label="Editor"
+      value={content}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  ),
+}));
+
 import { MobileEditor } from "../src/components/mobile/MobileEditor";
 import { MobileFolders } from "../src/components/mobile/MobileFolders";
 import { MobileNoteList } from "../src/components/mobile/MobileNoteList";
@@ -95,9 +111,10 @@ describe("mobile components", () => {
     expect(screen.getByText("2 notes")).toBeInTheDocument();
     expect(screen.getByText("Last 7 Days")).toBeInTheDocument();
     expect(screen.getByText("This is the first note")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Folders" })).toHaveTextContent("Folders");
     expect(screen.getByRole("button", { name: "New Note" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getAllByRole("button")[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Folders" }));
     fireEvent.click(screen.getByRole("button", { name: /daily log/i }));
     fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), {
       target: { value: "welcome" },
@@ -121,7 +138,7 @@ describe("mobile components", () => {
       updatedAt: "2026-04-20T10:30:00.000Z",
     };
 
-    const { container } = renderWithI18n(
+    renderWithI18n(
       <MobileEditor
         folderName="Inbox"
         note={note}
@@ -130,13 +147,16 @@ describe("mobile components", () => {
       />,
     );
 
-    expect(screen.getByText("Inbox")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Inbox" })).toHaveTextContent("Inbox");
     expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
-    expect(container.querySelector(".editor-content")).not.toBeNull();
-    expect(container.textContent).toContain("Initial body");
+    expect(screen.getByRole("textbox", { name: "Editor" })).toHaveValue("Initial body");
 
-    fireEvent.click(screen.getAllByRole("button")[0]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Editor" }), {
+      target: { value: "Updated body" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Inbox" }));
 
+    expect(onChangeBody).toHaveBeenCalledWith("Updated body");
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 });

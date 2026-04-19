@@ -43,10 +43,10 @@ export function MobileNoteList({
         <button
           type="button"
           className="mobile-nav-back"
-          aria-label={t("mobile.folders")}
           onClick={onBack}
         >
           <BackIcon />
+          <span>{t("mobile.folders")}</span>
         </button>
         <div className="mobile-nav-title">{folderName}</div>
         <div className="mobile-nav-actions" />

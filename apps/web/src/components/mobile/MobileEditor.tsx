@@ -25,10 +25,10 @@ export function MobileEditor({
         <button
           type="button"
           className="mobile-nav-back"
-          aria-label={folderName}
           onClick={onBack}
         >
           <BackIcon />
+          <span>{folderName}</span>
         </button>
         <div className="mobile-nav-title">{folderName}</div>
         <div className="mobile-nav-actions">
