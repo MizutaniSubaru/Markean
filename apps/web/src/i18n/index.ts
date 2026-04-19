@@ -16,8 +16,12 @@ function resolveLocale(raw: string): string {
 
 export function detectLocale(): string {
   if (typeof window === "undefined") return "en";
-  const stored = localStorage.getItem("markean:locale");
-  if (stored) return resolveLocale(stored);
+  try {
+    const stored = localStorage.getItem("markean:locale");
+    if (stored) return resolveLocale(stored);
+  } catch {
+    // Fall back to navigator language when storage is unavailable.
+  }
   return resolveLocale(navigator.language);
 }
 

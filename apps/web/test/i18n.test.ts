@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { createI18n } from "../src/i18n";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createI18n, detectLocale } from "../src/i18n";
 
 describe("i18n", () => {
   it("returns English text for en locale", () => {
@@ -30,5 +30,31 @@ describe("i18n", () => {
   it("interpolates {n} in Chinese count strings", () => {
     const i18n = createI18n("zh");
     expect(i18n.t("noteList.count", { n: 3 })).toBe("3 篇笔记");
+  });
+});
+
+describe("detectLocale", () => {
+  const originalLocalStorage = window.localStorage;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: originalLocalStorage,
+    });
+  });
+
+  it("falls back to navigator.language when storage access throws", () => {
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        getItem() {
+          throw new Error("storage blocked");
+        },
+      },
+    });
+
+    const expected = navigator.language.startsWith("zh") ? "zh" : "en";
+    expect(detectLocale()).toBe(expected);
   });
 });
