@@ -82,4 +82,26 @@ describe("MarkeanEditor", () => {
 
     expect(onChange).toHaveBeenCalledWith("Updated body");
   });
+
+  it("updates the editor when the content prop changes without echoing onChange", async () => {
+    const onChange = vi.fn();
+    const { container, rerender } = render(
+      <MarkeanEditor content="# First heading" onChange={onChange} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector(".cm-md-h1")?.textContent).toContain("First heading");
+    });
+
+    rerender(<MarkeanEditor content="## Second heading" onChange={onChange} />);
+
+    await waitFor(() => {
+      const headingLine = container.querySelector(".cm-md-h2");
+      expect(headingLine).toBeInTheDocument();
+      expect(headingLine?.textContent).toContain("Second heading");
+      expect(headingLine?.textContent).not.toContain("First heading");
+    });
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });
