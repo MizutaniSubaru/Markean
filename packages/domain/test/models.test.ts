@@ -6,9 +6,11 @@ describe("domain factories", () => {
     const folder = createFolderRecord({
       id: "folder_1",
       name: "Inbox",
+      sortOrder: 10,
     });
 
     expect(folder.name).toBe("Inbox");
+    expect(folder.sortOrder).toBe(10);
     expect(folder.currentRevision).toBe(1);
   });
 
