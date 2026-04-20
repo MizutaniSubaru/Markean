@@ -33,6 +33,11 @@ type HandledChangeRow = SyncChangeResult & {
 };
 
 const toBodyPlain = (bodyMd: string) => bodyMd.replace(/\s+/g, " ").trim();
+const expectOneChanged = (changes: number | undefined, description: string) => {
+  if ((changes ?? 0) !== 1) {
+    throw new Error(`SyncCoordinator: expected exactly one row for ${description}`);
+  }
+};
 
 export class SyncCoordinator extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -99,10 +104,11 @@ export class SyncCoordinator extends DurableObject<Env> {
       )
       .first<{ cursor: number }>();
 
-    const cursor = eventRow?.cursor ?? 0;
+    let cursor = eventRow?.cursor ?? 0;
 
     if (change.entityType === "folder" && change.operation === "delete") {
-      await this.cascadeDeleteNotes(change.userId, change.entityId, change.deviceId, now);
+      const cascadeCursor = await this.cascadeDeleteNotes(change.userId, change.entityId, change.deviceId, now);
+      cursor = Math.max(cursor, cascadeCursor);
     }
 
     this.ctx.storage.sql.exec(
@@ -123,11 +129,12 @@ export class SyncCoordinator extends DurableObject<Env> {
     now: string,
   ): Promise<void> {
     if (change.operation === "delete") {
-      await this.env.DB.prepare(
+      const result = await this.env.DB.prepare(
         `UPDATE notes SET deleted_at = ?, current_revision = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
       )
         .bind(now, acceptedRevision, now, change.entityId, change.userId)
         .run();
+      expectOneChanged(result.meta.changes, `note delete ${change.entityId}`);
       return;
     }
 
@@ -156,7 +163,7 @@ export class SyncCoordinator extends DurableObject<Env> {
       return;
     }
 
-    await this.env.DB.prepare(
+    const result = await this.env.DB.prepare(
       `UPDATE notes SET
          folder_id = ?, title = ?, body_md = ?, body_plain = ?,
          current_revision = ?, updated_at = ?, deleted_at = NULL
@@ -173,6 +180,7 @@ export class SyncCoordinator extends DurableObject<Env> {
         change.userId,
       )
       .run();
+    expectOneChanged(result.meta.changes, `note update ${change.entityId}`);
   }
 
   private async applyFolderChange(
@@ -181,11 +189,12 @@ export class SyncCoordinator extends DurableObject<Env> {
     now: string,
   ): Promise<void> {
     if (change.operation === "delete") {
-      await this.env.DB.prepare(
+      const result = await this.env.DB.prepare(
         `UPDATE folders SET deleted_at = ?, current_revision = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
       )
         .bind(now, acceptedRevision, now, change.entityId, change.userId)
         .run();
+      expectOneChanged(result.meta.changes, `folder delete ${change.entityId}`);
       return;
     }
 
@@ -211,7 +220,7 @@ export class SyncCoordinator extends DurableObject<Env> {
       return;
     }
 
-    await this.env.DB.prepare(
+    const result = await this.env.DB.prepare(
       `UPDATE folders SET
          name = ?, sort_order = ?, current_revision = ?, updated_at = ?
        WHERE id = ? AND user_id = ?`,
@@ -225,6 +234,7 @@ export class SyncCoordinator extends DurableObject<Env> {
         change.userId,
       )
       .run();
+    expectOneChanged(result.meta.changes, `folder update ${change.entityId}`);
   }
 
   private async cascadeDeleteNotes(
@@ -232,26 +242,30 @@ export class SyncCoordinator extends DurableObject<Env> {
     folderId: string,
     deviceId: string,
     now: string,
-  ): Promise<void> {
+  ): Promise<number> {
     const notes = await this.env.DB.prepare(
       `SELECT id, current_revision FROM notes WHERE folder_id = ? AND user_id = ? AND deleted_at IS NULL`,
     )
       .bind(folderId, userId)
       .all<{ id: string; current_revision: number }>();
 
+    let maxCursor = 0;
+
     for (const note of notes.results) {
       const newRevision = note.current_revision + 1;
-      await this.env.DB.prepare(
-        `UPDATE notes SET deleted_at = ?, current_revision = ?, updated_at = ? WHERE id = ?`,
+      const updateResult = await this.env.DB.prepare(
+        `UPDATE notes SET deleted_at = ?, current_revision = ?, updated_at = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
       )
-        .bind(now, newRevision, now, note.id)
+        .bind(now, newRevision, now, note.id, userId)
         .run();
+      expectOneChanged(updateResult.meta.changes, `cascade note delete ${note.id}`);
 
-      await this.env.DB.prepare(
+      const eventRow = await this.env.DB.prepare(
         `INSERT INTO sync_events (
            id, user_id, entity_type, entity_id, operation,
            revision_number, client_change_id, source_device_id, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         RETURNING cursor`,
       )
         .bind(
           `evt_${crypto.randomUUID()}`,
@@ -264,7 +278,10 @@ export class SyncCoordinator extends DurableObject<Env> {
           deviceId,
           now,
         )
-        .run();
+        .first<{ cursor: number }>();
+      maxCursor = Math.max(maxCursor, eventRow?.cursor ?? 0);
     }
+
+    return maxCursor;
   }
 }
