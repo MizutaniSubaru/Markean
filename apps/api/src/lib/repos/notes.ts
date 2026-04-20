@@ -53,7 +53,8 @@ export const listActiveNotesByUserId = async (db: D1Database, userId: string) =>
          body_plain AS bodyPlain,
          current_revision AS currentRevision,
          created_at AS createdAt,
-         updated_at AS updatedAt
+         updated_at AS updatedAt,
+         deleted_at AS deletedAt
        FROM notes
        WHERE user_id = ?
          AND deleted_at IS NULL

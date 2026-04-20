@@ -60,6 +60,9 @@ describe("notes routes", () => {
     await baseEnv.DB.prepare(
       "INSERT INTO notes (id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind("n2", "user_dev", "f1", "Deleted", "body", "body", 1, now, now, now).run();
+    await baseEnv.DB.prepare(
+      "INSERT INTO notes (id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind("n3", "user_other", "f2", "Other User Active", "body", "body", 1, now, now, null).run();
 
     const res = await worker.fetch(
       new Request("https://example.com/api/notes", { headers: { cookie } }),
@@ -67,9 +70,10 @@ describe("notes routes", () => {
     );
 
     expect(res.status).toBe(200);
-    const data = await res.json() as { id: string }[];
+    const data = await res.json() as { id: string; deletedAt: string | null }[];
     expect(data).toHaveLength(1);
     expect(data[0].id).toBe("n1");
+    expect(data[0].deletedAt).toBeNull();
   });
 
   it("GET /api/notes/trash returns only deleted notes", async () => {
@@ -80,6 +84,9 @@ describe("notes routes", () => {
     await baseEnv.DB.prepare(
       "INSERT INTO notes (id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind("n2", "user_dev", "f1", "Deleted", "body", "body", 1, now, now, now).run();
+    await baseEnv.DB.prepare(
+      "INSERT INTO notes (id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind("n3", "user_other", "f2", "Other User Deleted", "body", "body", 1, now, now, now).run();
 
     const res = await worker.fetch(
       new Request("https://example.com/api/notes/trash", { headers: { cookie } }),
@@ -114,9 +121,70 @@ describe("notes routes", () => {
     expect(note!.deleted_at).toBeNull();
     expect(note!.current_revision).toBe(2);
 
-    const event = await baseEnv.DB.prepare("SELECT * FROM sync_events WHERE entity_id = ?")
-      .bind("n1").first();
+    const event = await baseEnv.DB.prepare(
+      "SELECT user_id, entity_type, operation, revision_number FROM sync_events WHERE entity_id = ?"
+    ).bind("n1").first<{
+      user_id: string;
+      entity_type: string;
+      operation: string;
+      revision_number: number;
+    }>();
     expect(event).not.toBeNull();
+    expect(event!.user_id).toBe("user_dev");
+    expect(event!.entity_type).toBe("note");
+    expect(event!.operation).toBe("update");
+    expect(event!.revision_number).toBe(2);
+  });
+
+  it("POST /api/notes/:id/restore returns 404 for an active note and emits no sync event", async () => {
+    const now = new Date().toISOString();
+    await baseEnv.DB.prepare(
+      "INSERT INTO notes (id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind("n1", "user_dev", "f1", "Active", "body", "body", 1, now, now, null).run();
+
+    const devEnv = { ...baseEnv, ALLOW_DEV_SESSION: "true" };
+    const res = await worker.fetch(
+      new Request("https://example.com/api/notes/n1/restore", {
+        method: "POST",
+        headers: { cookie },
+      }),
+      devEnv,
+    );
+
+    expect(res.status).toBe(404);
+
+    const note = await baseEnv.DB.prepare("SELECT deleted_at, current_revision FROM notes WHERE id = ?")
+      .bind("n1").first<{ deleted_at: string | null; current_revision: number }>();
+    expect(note!.deleted_at).toBeNull();
+    expect(note!.current_revision).toBe(1);
+
+    const eventCount = await baseEnv.DB.prepare(
+      "SELECT COUNT(*) AS count FROM sync_events WHERE entity_id = ?"
+    ).bind("n1").first<{ count: number }>();
+    expect(eventCount!.count).toBe(0);
+  });
+
+  it("POST /api/notes/:id/restore returns 404 when restoring another user's deleted note", async () => {
+    const now = new Date().toISOString();
+    await baseEnv.DB.prepare(
+      "INSERT INTO notes (id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind("n1", "user_other", "f2", "Other User Deleted", "body", "body", 1, now, now, now).run();
+
+    const devEnv = { ...baseEnv, ALLOW_DEV_SESSION: "true" };
+    const res = await worker.fetch(
+      new Request("https://example.com/api/notes/n1/restore", {
+        method: "POST",
+        headers: { cookie },
+      }),
+      devEnv,
+    );
+
+    expect(res.status).toBe(404);
+
+    const note = await baseEnv.DB.prepare("SELECT deleted_at, current_revision FROM notes WHERE id = ?")
+      .bind("n1").first<{ deleted_at: string | null; current_revision: number }>();
+    expect(note!.deleted_at).not.toBeNull();
+    expect(note!.current_revision).toBe(1);
   });
 
   it("POST /api/notes/:id/restore returns 404 for non-existent note", async () => {
