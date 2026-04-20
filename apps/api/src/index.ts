@@ -19,4 +19,16 @@ app.route("/", folderRoutes);
 app.route("/", noteRoutes);
 app.route("/", syncRoutes);
 
-export default app;
+export default {
+  fetch: app.fetch,
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    await env.DB.prepare(
+      `DELETE FROM notes WHERE deleted_at IS NOT NULL
+       AND deleted_at < datetime('now', '-30 days')`,
+    ).run();
+    await env.DB.prepare(
+      `DELETE FROM folders WHERE deleted_at IS NOT NULL
+       AND deleted_at < datetime('now', '-30 days')`,
+    ).run();
+  },
+};

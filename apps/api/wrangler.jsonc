@@ -9,6 +9,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-04-07",
   "compatibility_flags": ["nodejs_compat"],
+  "triggers": {
+    "crons": ["0 3 * * *"]
+  },
   "durable_objects": {
     "bindings": [
       {
