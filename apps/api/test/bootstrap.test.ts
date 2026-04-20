@@ -56,6 +56,15 @@ const devSessionEnv = {
   ALLOW_DEV_SESSION: "true",
 } as typeof env & { DB: D1Database; ALLOW_DEV_SESSION: string };
 
+type BootstrapPayload = {
+  user: {
+    id: string;
+    email: string;
+  };
+  folders: Array<{ id: string }>;
+  notes: Array<{ id: string }>;
+};
+
 describe("bootstrap route", () => {
   beforeAll(async () => {
     for (const statement of migrationStatements) {
@@ -180,7 +189,7 @@ describe("bootstrap route", () => {
 
     expect(bootstrap.status).toBe(200);
 
-    const payload = await bootstrap.json();
+    const payload = (await bootstrap.json()) as BootstrapPayload;
     expect(payload.user).toEqual({
       id: "user_dev",
       email: "dev@markean.local",
