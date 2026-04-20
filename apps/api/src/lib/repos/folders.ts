@@ -15,6 +15,7 @@ export const listFoldersByUserId = async (db: D1Database, userId: string) => {
          id,
          name,
          sort_order AS sortOrder,
+         current_revision AS currentRevision,
          created_at AS createdAt,
          updated_at AS updatedAt,
          deleted_at AS deletedAt
@@ -37,7 +38,8 @@ export const listActiveFoldersByUserId = async (db: D1Database, userId: string) 
          sort_order AS sortOrder,
          current_revision AS currentRevision,
          created_at AS createdAt,
-         updated_at AS updatedAt
+         updated_at AS updatedAt,
+         deleted_at AS deletedAt
        FROM folders
        WHERE user_id = ?
          AND deleted_at IS NULL
