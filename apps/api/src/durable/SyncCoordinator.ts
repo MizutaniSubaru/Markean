@@ -75,12 +75,12 @@ export class SyncCoordinator extends DurableObject<Env> {
     }
 
     const now = new Date().toISOString();
-    const acceptedRevision = change.baseRevision + 1;
+    let acceptedRevision = change.baseRevision + 1;
 
     if (change.entityType === "note") {
-      await this.applyNoteChange(change, acceptedRevision, now);
+      acceptedRevision = await this.applyNoteChange(change, acceptedRevision, now);
     } else {
-      await this.applyFolderChange(change, acceptedRevision, now);
+      acceptedRevision = await this.applyFolderChange(change, acceptedRevision, now);
     }
 
     const eventRow = await this.env.DB.prepare(
@@ -127,15 +127,22 @@ export class SyncCoordinator extends DurableObject<Env> {
     change: SyncChangeInput,
     acceptedRevision: number,
     now: string,
-  ): Promise<void> {
+  ): Promise<number> {
     if (change.operation === "delete") {
       const result = await this.env.DB.prepare(
-        `UPDATE notes SET deleted_at = ?, current_revision = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
+        `UPDATE notes
+         SET deleted_at = ?, current_revision = current_revision + 1, updated_at = ?
+         WHERE id = ? AND user_id = ? AND deleted_at IS NULL
+         RETURNING current_revision AS acceptedRevision`,
       )
-        .bind(now, acceptedRevision, now, change.entityId, change.userId)
-        .run();
-      expectOneChanged(result.meta.changes, `note delete ${change.entityId}`);
-      return;
+        .bind(now, now, change.entityId, change.userId)
+        .first<{ acceptedRevision: number }>();
+
+      if (!result) {
+        throw new Error(`SyncCoordinator: expected exactly one row for note delete ${change.entityId}`);
+      }
+
+      return result.acceptedRevision;
     }
 
     const payload = change.payload as NotePayload;
@@ -160,7 +167,7 @@ export class SyncCoordinator extends DurableObject<Env> {
           now,
         )
         .run();
-      return;
+      return acceptedRevision;
     }
 
     const result = await this.env.DB.prepare(
@@ -178,24 +185,32 @@ export class SyncCoordinator extends DurableObject<Env> {
         now,
         change.entityId,
         change.userId,
-      )
+    )
       .run();
     expectOneChanged(result.meta.changes, `note update ${change.entityId}`);
+    return acceptedRevision;
   }
 
   private async applyFolderChange(
     change: SyncChangeInput,
     acceptedRevision: number,
     now: string,
-  ): Promise<void> {
+  ): Promise<number> {
     if (change.operation === "delete") {
       const result = await this.env.DB.prepare(
-        `UPDATE folders SET deleted_at = ?, current_revision = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
+        `UPDATE folders
+         SET deleted_at = ?, current_revision = current_revision + 1, updated_at = ?
+         WHERE id = ? AND user_id = ? AND deleted_at IS NULL
+         RETURNING current_revision AS acceptedRevision`,
       )
-        .bind(now, acceptedRevision, now, change.entityId, change.userId)
-        .run();
-      expectOneChanged(result.meta.changes, `folder delete ${change.entityId}`);
-      return;
+        .bind(now, now, change.entityId, change.userId)
+        .first<{ acceptedRevision: number }>();
+
+      if (!result) {
+        throw new Error(`SyncCoordinator: expected exactly one row for folder delete ${change.entityId}`);
+      }
+
+      return result.acceptedRevision;
     }
 
     const payload = change.payload as FolderPayload;
@@ -217,7 +232,7 @@ export class SyncCoordinator extends DurableObject<Env> {
           now,
         )
         .run();
-      return;
+      return acceptedRevision;
     }
 
     const result = await this.env.DB.prepare(
@@ -232,9 +247,10 @@ export class SyncCoordinator extends DurableObject<Env> {
         now,
         change.entityId,
         change.userId,
-      )
+    )
       .run();
     expectOneChanged(result.meta.changes, `folder update ${change.entityId}`);
+    return acceptedRevision;
   }
 
   private async cascadeDeleteNotes(
