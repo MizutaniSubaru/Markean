@@ -1,0 +1,1 @@
+ALTER TABLE folders ADD COLUMN current_revision INTEGER NOT NULL DEFAULT 1;
