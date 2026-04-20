@@ -2,43 +2,37 @@ import "fake-indexeddb/auto";
 
 import { describe, expect, it } from "vitest";
 import { createWebDatabase } from "../../storage-web/src/index";
-import { queueNoteUpdate, reconcilePushResult } from "../src/index";
+import { getDeviceId, queueChange } from "../src/index";
 
 describe("sync engine queue", () => {
-  it("creates a note and pending change from the shared domain helpers", async () => {
+  it("queues a pending change via the shared domain helper", async () => {
     const db = createWebDatabase("test-markean-sync");
 
-    await queueNoteUpdate(db, {
-      noteId: "note_1",
-      folderId: "folder_1",
-      title: "Draft",
-      bodyMd: "# Draft\n\nHello world",
+    await queueChange(db, {
+      entityType: "note",
+      entityId: "note_1",
+      operation: "update",
+      baseRevision: 1,
     });
 
-    const [note] = await db.notes.toArray();
     const [change] = await db.pendingChanges.toArray();
 
-    expect(note?.bodyPlain).toBe("Draft Hello world");
-    expect(note?.currentRevision).toBe(1);
     expect(change?.entityType).toBe("note");
     expect(change?.entityId).toBe("note_1");
+    expect(change?.operation).toBe("update");
     expect(change?.baseRevision).toBe(1);
+    expect(change?.clientChangeId).toMatch(/^chg_/);
   });
 
-  it("creates a conflicted copy when the server rejects a stale revision", () => {
-    const result = reconcilePushResult({
-      accepted: [],
-      conflicts: [
-        {
-          entityId: "note_1",
-          serverRevision: 4,
-          localTitle: "Draft",
-          localBodyMd: "Stale edit",
-        },
-      ],
-    });
+  it("persists and reuses a generated device id", async () => {
+    const db = createWebDatabase("test-markean-device-id");
 
-    expect(result.conflictedCopies).toHaveLength(1);
-    expect(result.conflictedCopies[0]?.title).toContain("Conflicted Copy");
+    const firstId = await getDeviceId(db);
+    const secondId = await getDeviceId(db);
+    const stored = await db.syncState.get("deviceId");
+
+    expect(firstId).toMatch(/^dev_/);
+    expect(secondId).toBe(firstId);
+    expect(stored?.value).toBe(firstId);
   });
 });
