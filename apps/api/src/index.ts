@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "./env";
+import { authRoutes } from "./routes/auth";
 import { bootstrapRoutes } from "./routes/bootstrap";
 import { devSessionRoutes } from "./routes/dev-session";
 import { healthRoutes } from "./routes/health";
@@ -11,6 +12,7 @@ export { SyncCoordinator } from "./durable/SyncCoordinator";
 const app = new Hono<{ Bindings: Env }>();
 
 app.route("/", healthRoutes);
+app.route("/", authRoutes);
 app.route("/", devSessionRoutes);
 app.route("/", bootstrapRoutes);
 app.route("/", folderRoutes);

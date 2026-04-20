@@ -4,6 +4,7 @@
 !/packages/
 !/packages/**
 .superpowers/
+.worktrees/
 node_modules/
 /apps/web/dist/
 test-results/
