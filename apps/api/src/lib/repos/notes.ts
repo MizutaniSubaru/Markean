@@ -101,14 +101,34 @@ export const restoreNote = async (db: D1Database, userId: string, noteId: string
   const now = new Date().toISOString();
   const newRevision = note.current_revision + 1;
 
-  await db.batch([
-    db.prepare("UPDATE notes SET deleted_at = NULL, current_revision = ?, updated_at = ? WHERE id = ?")
-      .bind(newRevision, now, noteId),
-    db.prepare(
+  const updateResult = await db
+    .prepare(
+      "UPDATE notes SET deleted_at = NULL, current_revision = ?, updated_at = ? WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL",
+    )
+    .bind(newRevision, now, noteId, userId)
+    .run();
+
+  if ((updateResult.meta.changes ?? 0) !== 1) {
+    return null;
+  }
+
+  await db
+    .prepare(
       `INSERT INTO sync_events (id, user_id, entity_type, entity_id, operation, revision_number, client_change_id, source_device_id, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(`evt_${crypto.randomUUID()}`, userId, "note", noteId, "update", newRevision, `restore_${noteId}`, "server", now),
-  ]);
+    )
+    .bind(
+      `evt_${crypto.randomUUID()}`,
+      userId,
+      "note",
+      noteId,
+      "update",
+      newRevision,
+      `restore_${noteId}`,
+      "server",
+      now,
+    )
+    .run();
 
   return { id: noteId, revision: newRevision };
 };

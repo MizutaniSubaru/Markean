@@ -164,6 +164,42 @@ describe("notes routes", () => {
     expect(eventCount!.count).toBe(0);
   });
 
+  it("POST /api/notes/:id/restore only succeeds once for the same note", async () => {
+    const now = new Date().toISOString();
+    await baseEnv.DB.prepare(
+      "INSERT INTO notes (id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind("n1", "user_dev", "f1", "Deleted", "body", "body", 1, now, now, now).run();
+
+    const devEnv = { ...baseEnv, ALLOW_DEV_SESSION: "true" };
+    const firstRes = await worker.fetch(
+      new Request("https://example.com/api/notes/n1/restore", {
+        method: "POST",
+        headers: { cookie },
+      }),
+      devEnv,
+    );
+    expect(firstRes.status).toBe(200);
+
+    const secondRes = await worker.fetch(
+      new Request("https://example.com/api/notes/n1/restore", {
+        method: "POST",
+        headers: { cookie },
+      }),
+      devEnv,
+    );
+    expect(secondRes.status).toBe(404);
+
+    const note = await baseEnv.DB.prepare("SELECT deleted_at, current_revision FROM notes WHERE id = ?")
+      .bind("n1").first<{ deleted_at: string | null; current_revision: number }>();
+    expect(note!.deleted_at).toBeNull();
+    expect(note!.current_revision).toBe(2);
+
+    const eventCount = await baseEnv.DB.prepare(
+      "SELECT COUNT(*) AS count FROM sync_events WHERE entity_id = ?"
+    ).bind("n1").first<{ count: number }>();
+    expect(eventCount!.count).toBe(1);
+  });
+
   it("POST /api/notes/:id/restore returns 404 when restoring another user's deleted note", async () => {
     const now = new Date().toISOString();
     await baseEnv.DB.prepare(
