@@ -1,34 +1,26 @@
 import { Hono } from "hono";
-import type { Env } from "../env";
+import type { AuthEnv } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { getDb } from "../lib/db";
-import { listFoldersByUserId } from "../lib/repos/folders";
-import { getLatestSyncCursorForUser, listNotesByUserId } from "../lib/repos/notes";
-import { getSessionIdFromCookie, getUserForSessionCookieValue } from "../lib/repos/sessions";
+import { listActiveFoldersByUserId } from "../lib/repos/folders";
+import { listActiveNotesByUserId, getLatestSyncCursorForUser } from "../lib/repos/notes";
 
-export const bootstrapRoutes = new Hono<{ Bindings: Env }>().get("/api/bootstrap", async (c) => {
-  const sessionCookieValue = getSessionIdFromCookie(c.req.header("cookie"));
+export const bootstrapRoutes = new Hono<AuthEnv>()
+  .use("/api/bootstrap", requireAuth)
+  .get("/api/bootstrap", async (c) => {
+    const db = getDb(c.env);
+    const userId = c.get("userId");
 
-  if (!sessionCookieValue) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+    const [folders, notes, syncCursor] = await Promise.all([
+      listActiveFoldersByUserId(db, userId),
+      listActiveNotesByUserId(db, userId),
+      getLatestSyncCursorForUser(db, userId),
+    ]);
 
-  const db = getDb(c.env);
-  const user = await getUserForSessionCookieValue(db, sessionCookieValue);
-
-  if (!user) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  const [folders, notes, syncCursor] = await Promise.all([
-    listFoldersByUserId(db, user.id),
-    listNotesByUserId(db, user.id),
-    getLatestSyncCursorForUser(db, user.id),
-  ]);
-
-  return c.json({
-    user,
-    folders,
-    notes,
-    syncCursor,
+    return c.json({
+      user: { id: userId, email: c.get("userEmail") },
+      folders,
+      notes,
+      syncCursor,
+    });
   });
-});
