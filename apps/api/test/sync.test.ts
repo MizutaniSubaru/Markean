@@ -249,6 +249,88 @@ describe("sync routes", () => {
     });
   });
 
+  it("reuses an existing D1 parent event when DO handled state is missing", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const sessionId = "sess_replay";
+    const replayCookie = `markean_session=${sessionId}`;
+    await baseEnv.DB.batch([
+      baseEnv.DB.prepare(
+        `INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`,
+      ).bind("user_replay", "replay@markean.local", now),
+      baseEnv.DB.prepare(
+        `INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
+      ).bind(sessionId, "user_replay", now, "2026-12-31T00:00:00.000Z"),
+      baseEnv.DB.prepare(
+        `INSERT INTO folders (
+          id, user_id, name, sort_order, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("folder_1", "user_replay", "Inbox", 1, 1, now, now),
+      baseEnv.DB.prepare(
+        `INSERT INTO notes (
+          id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("note_1", "user_replay", "folder_1", "Hello", "World", "World", 1, now, now),
+      baseEnv.DB.prepare(
+        `INSERT INTO sync_events (
+          id, user_id, entity_type, entity_id, operation,
+          revision_number, client_change_id, source_device_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        "evt_existing",
+        "user_replay",
+        "note",
+        "note_1",
+        "create",
+        1,
+        "chg_note_create_replay",
+        "web_1",
+        now,
+      ),
+    ]);
+
+    const response = await pushSync(
+      {
+        deviceId: "web_2",
+        changes: [
+          {
+            clientChangeId: "chg_note_create_replay",
+            entityType: "note",
+            entityId: "note_1",
+            operation: "create",
+            baseRevision: 0,
+            payload: {
+              folderId: "folder_1",
+              title: "Hello",
+              bodyMd: "World",
+            },
+          },
+        ],
+      },
+      replayCookie,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      accepted: [{ acceptedRevision: 1, cursor: 1 }],
+      cursor: 1,
+    });
+
+    const eventCounts = await baseEnv.DB.prepare(
+      `SELECT
+         COUNT(*) AS total,
+         COUNT(DISTINCT client_change_id) AS distinctClientChangeIds
+       FROM sync_events
+       WHERE user_id = ? AND client_change_id = ?`,
+    )
+      .bind("user_replay", "chg_note_create_replay")
+      .first<{ total: number; distinctClientChangeIds: number }>();
+
+    expect(eventCounts).toEqual({
+      total: 1,
+      distinctClientChangeIds: 1,
+    });
+  });
+
   it("detects conflicts on update", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     await baseEnv.DB.prepare(
@@ -350,6 +432,55 @@ describe("sync routes", () => {
 
     expect(note?.deletedAt).not.toBeNull();
     expect(note?.currentRevision).toBe(2);
+  });
+
+  it("rejects note update when the live target row is missing and emits no sync event", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    await baseEnv.DB.batch([
+      baseEnv.DB.prepare(
+        `INSERT INTO folders (
+          id, user_id, name, sort_order, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("folder_1", "user_dev", "Inbox", 1, 1, now, now),
+      baseEnv.DB.prepare(
+        `INSERT INTO notes (
+          id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind("note_missing", "user_dev", "folder_1", "Hello", "World", "World", 1, now, now, now),
+    ]);
+
+    const response = await pushSync(
+      {
+        deviceId: "web_1",
+        changes: [
+          {
+            clientChangeId: "chg_note_update_missing",
+            entityType: "note",
+            entityId: "note_missing",
+            operation: "update",
+            baseRevision: 1,
+            payload: {
+              folderId: "folder_1",
+              title: "Updated",
+              bodyMd: "Body",
+            },
+          },
+        ],
+      },
+      cookie,
+    );
+
+    expect(response.status).toBe(500);
+
+    const eventCount = await baseEnv.DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM sync_events
+       WHERE user_id = ? AND client_change_id = ?`,
+    )
+      .bind("user_dev", "chg_note_update_missing")
+      .first<{ count: number }>();
+
+    expect(eventCount?.count).toBe(0);
   });
 
   it("cascade soft-deletes notes when folder is deleted", async () => {
