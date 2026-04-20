@@ -49,6 +49,7 @@ const migrationStatements = [
     user_id TEXT NOT NULL,
     name TEXT NOT NULL,
     sort_order INTEGER NOT NULL,
+    current_revision INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT

@@ -3,27 +3,28 @@ import { beforeAll, describe, expect, it } from "vitest";
 import worker from "../src/index";
 
 const migrationStatements = [
-  `CREATE TABLE users (
+  `CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`,
-  `CREATE TABLE sessions (
+  `CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
   )`,
-  `CREATE TABLE folders (
+  `CREATE TABLE IF NOT EXISTS folders (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     name TEXT NOT NULL,
     sort_order INTEGER NOT NULL,
+    current_revision INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT
   )`,
-  `CREATE TABLE notes (
+  `CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     folder_id TEXT NOT NULL,
@@ -35,7 +36,7 @@ const migrationStatements = [
     updated_at TEXT NOT NULL,
     deleted_at TEXT
   )`,
-  `CREATE TABLE sync_events (
+  `CREATE TABLE IF NOT EXISTS sync_events (
     cursor INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
     user_id TEXT NOT NULL,
