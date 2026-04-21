@@ -99,9 +99,21 @@ export async function pushChanges(
   }
 
   const result = await apiClient.syncPush({ deviceId, changes });
+  const acceptedChanges = pending.slice(0, result.accepted.length);
+
+  for (const [index, accepted] of result.accepted.entries()) {
+    const change = acceptedChanges[index];
+    if (!change) continue;
+
+    if (change.entityType === "note") {
+      await db.notes.update(change.entityId, { currentRevision: accepted.acceptedRevision });
+    } else {
+      await db.folders.update(change.entityId, { currentRevision: accepted.acceptedRevision });
+    }
+  }
 
   if (result.accepted.length > 0) {
-    const acceptedIds = pending.slice(0, result.accepted.length).map((p) => p.clientChangeId);
+    const acceptedIds = acceptedChanges.map((p) => p.clientChangeId);
     await db.pendingChanges.where("clientChangeId").anyOf(acceptedIds).delete();
   }
 

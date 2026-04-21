@@ -2,7 +2,7 @@ import "fake-indexeddb/auto";
 
 import { describe, expect, it } from "vitest";
 import { createWebDatabase } from "../../storage-web/src/index";
-import { getDeviceId, queueChange } from "../src/index";
+import { getDeviceId, pushChanges, queueChange } from "../src/index";
 
 describe("sync engine queue", () => {
   it("queues a pending change via the shared domain helper", async () => {
@@ -34,5 +34,47 @@ describe("sync engine queue", () => {
     expect(firstId).toMatch(/^dev_/);
     expect(secondId).toBe(firstId);
     expect(stored?.value).toBe(firstId);
+  });
+
+  it("reconciles the originating device with accepted server state after push", async () => {
+    const db = createWebDatabase(`test-markean-push-reconcile-${crypto.randomUUID()}`);
+
+    await db.notes.put({
+      id: "note_1",
+      folderId: "folder_1",
+      title: "Local title",
+      bodyMd: "Local body",
+      bodyPlain: "Local body",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    });
+
+    await queueChange(db, {
+      entityType: "note",
+      entityId: "note_1",
+      operation: "update",
+      baseRevision: 1,
+    });
+
+    const apiClient = {
+      async syncPush() {
+        return {
+          accepted: [{ acceptedRevision: 2, cursor: 10 }],
+          conflicts: [],
+        };
+      },
+      async syncPull() {
+        throw new Error("syncPull should not be called");
+      },
+    };
+
+    await pushChanges(db, apiClient, "device_1");
+
+    expect(await db.pendingChanges.toArray()).toHaveLength(0);
+    expect(await db.syncState.get("syncCursor")).toEqual({ key: "syncCursor", value: "10" });
+    await expect(db.notes.get("note_1")).resolves.toMatchObject({
+      currentRevision: 2,
+    });
   });
 });
