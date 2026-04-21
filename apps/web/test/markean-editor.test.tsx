@@ -2,7 +2,7 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorView } from "@codemirror/view";
-import { MarkeanEditor } from "../src/components/editor/MarkeanEditor";
+import { MarkeanEditor } from "../src/features/notes/components/editor/MarkeanEditor";
 
 describe("MarkeanEditor", () => {
   afterEach(() => {

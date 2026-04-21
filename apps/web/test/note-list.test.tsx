@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NoteList } from "../src/components/desktop/NoteList";
+import { NoteList } from "../src/features/notes/components/desktop/NoteList";
 import { I18nProvider, createI18n } from "../src/i18n";
 
 const i18n = createI18n("en");

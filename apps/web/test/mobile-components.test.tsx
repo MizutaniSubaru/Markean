@@ -1,8 +1,9 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
+import type { NoteRecord } from "@markean/domain";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-vi.mock("../src/components/editor/MarkeanEditor", () => ({
+vi.mock("../src/features/notes/components/editor/MarkeanEditor", () => ({
   MarkeanEditor: ({
     content,
     onChange,
@@ -18,10 +19,9 @@ vi.mock("../src/components/editor/MarkeanEditor", () => ({
   ),
 }));
 
-import { MobileEditor } from "../src/components/mobile/MobileEditor";
-import { MobileFolders } from "../src/components/mobile/MobileFolders";
-import { MobileNoteList } from "../src/components/mobile/MobileNoteList";
-import type { WorkspaceNote } from "../src/lib/storage";
+import { MobileEditor } from "../src/features/notes/components/mobile/MobileEditor";
+import { MobileFolders } from "../src/features/notes/components/mobile/MobileFolders";
+import { MobileNoteList } from "../src/features/notes/components/mobile/MobileNoteList";
 import { I18nProvider, createI18n } from "../src/i18n";
 
 const i18n = createI18n("en");
@@ -130,12 +130,15 @@ describe("mobile components", () => {
   it("renders the mobile editor without requiring a done callback", () => {
     const onBack = vi.fn();
     const onChangeBody = vi.fn();
-    const note: WorkspaceNote = {
+    const note: NoteRecord = {
       id: "n1",
       folderId: "inbox",
       title: "Welcome to Markean",
-      body: "Initial body",
+      bodyMd: "Initial body",
+      bodyPlain: "Initial body",
+      currentRevision: 1,
       updatedAt: "2026-04-20T10:30:00.000Z",
+      deletedAt: null,
     };
 
     renderWithI18n(
@@ -149,9 +152,9 @@ describe("mobile components", () => {
 
     expect(screen.getByRole("button", { name: "Inbox" })).toHaveTextContent("Inbox");
     expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Editor" })).toHaveValue("Initial body");
+    expect(screen.getByRole("textbox")).toHaveTextContent("Initial body");
 
-    fireEvent.change(screen.getByRole("textbox", { name: "Editor" }), {
+    fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "Updated body" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Inbox" }));
