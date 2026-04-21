@@ -1,7 +1,6 @@
-import { useI18n } from "../../i18n";
+import { markdownToPlainText } from "@markean/domain";
 import type { SyncStatus, WorkspaceNote } from "../../lib/storage";
-import { MarkeanEditor } from "../editor/MarkeanEditor";
-import { EmptyNoteIcon, SyncIcon } from "../shared/Icons";
+import { Editor as FeatureEditor } from "../../features/notes/components/desktop/Editor";
 
 type EditorProps = {
   note: WorkspaceNote | null;
@@ -9,52 +8,24 @@ type EditorProps = {
   onChangeBody: (body: string) => void;
 };
 
-function formatModifiedDate(isoString: string, locale: string): string {
-  return new Intl.DateTimeFormat(locale.startsWith("zh") ? "zh-CN" : "en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(isoString));
-}
-
-export function Editor({ note, syncStatus, onChangeBody }: EditorProps) {
-  const { t, locale } = useI18n();
-
-  if (!note) {
-    return (
-      <div className="editor-pane">
-        <div className="no-note">
-          <EmptyNoteIcon />
-          <span>{t("editor.noSelection")}</span>
-          <span style={{ fontSize: 13, color: "var(--text-tertiary)" }}>
-            {t("editor.noSelectionHint")}
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  const syncLabel =
-    syncStatus === "syncing"
-      ? t("editor.syncing")
-      : syncStatus === "unsynced"
-        ? t("editor.unsynced")
-        : t("editor.synced");
-
+export function Editor({ note, onChangeBody }: EditorProps) {
   return (
-    <div className="editor-pane">
-      <div className="editor-meta">
-        <span>{formatModifiedDate(note.updatedAt, locale)}</span>
-        <span className="sync-badge">
-          <SyncIcon />
-          {syncLabel}
-        </span>
-      </div>
-      <div className="editor-scroll">
-        <MarkeanEditor key={note.id} content={note.body} onChange={onChangeBody} />
-      </div>
-    </div>
+    <FeatureEditor
+      note={
+        note
+          ? {
+              id: note.id,
+              folderId: note.folderId,
+              title: note.title,
+              bodyMd: note.body,
+              bodyPlain: markdownToPlainText(note.body),
+              currentRevision: 0,
+              updatedAt: note.updatedAt,
+              deletedAt: null,
+            }
+          : null
+      }
+      onChangeBody={onChangeBody}
+    />
   );
 }

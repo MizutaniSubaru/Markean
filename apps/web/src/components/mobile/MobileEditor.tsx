@@ -1,8 +1,6 @@
+import { markdownToPlainText } from "@markean/domain";
 import type { WorkspaceNote } from "../../lib/storage";
-import { useI18n } from "../../i18n";
-import { MarkeanEditor } from "../editor/MarkeanEditor";
-import { BackIcon } from "../shared/Icons";
-import "../../styles/mobile.css";
+import { MobileEditor as FeatureMobileEditor } from "../../features/notes/components/mobile/MobileEditor";
 
 type MobileEditorProps = {
   folderName: string;
@@ -11,36 +9,22 @@ type MobileEditorProps = {
   onChangeBody: (body: string) => void;
 };
 
-export function MobileEditor({
-  folderName,
-  note,
-  onBack,
-  onChangeBody,
-}: MobileEditorProps) {
-  const { t } = useI18n();
+export function MobileEditor(props: MobileEditorProps) {
+  const { note, ...rest } = props;
 
   return (
-    <section className="mobile-app">
-      <div className="mobile-nav">
-        <button
-          type="button"
-          className="mobile-nav-back"
-          onClick={onBack}
-        >
-          <BackIcon />
-          <span>{folderName}</span>
-        </button>
-        <div className="mobile-nav-title">{folderName}</div>
-        <div className="mobile-nav-actions">
-          <button type="button" onClick={onBack}>
-            {t("mobile.done")}
-          </button>
-        </div>
-      </div>
-
-      <div className="mobile-editor">
-        <MarkeanEditor key={note.id} content={note.body} onChange={onChangeBody} />
-      </div>
-    </section>
+    <FeatureMobileEditor
+      {...rest}
+      note={{
+        id: note.id,
+        folderId: note.folderId,
+        title: note.title,
+        bodyMd: note.body,
+        bodyPlain: markdownToPlainText(note.body),
+        currentRevision: 0,
+        updatedAt: note.updatedAt,
+        deletedAt: null,
+      }}
+    />
   );
 }
