@@ -1,7 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { AppRouter } from "./app/router";
-import "./styles/app.css";
+import { App } from "./App";
+import "./styles/variables.css";
+import "./styles/desktop.css";
+import "./styles/mobile.css";
+import "./styles/editor.css";
 
 const rootElement = document.getElementById("root");
 
@@ -11,7 +14,7 @@ if (!rootElement) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    <AppRouter />
+    <App />
   </StrictMode>,
 );
 

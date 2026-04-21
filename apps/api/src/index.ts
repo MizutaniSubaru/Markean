@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "./env";
+import { authRoutes } from "./routes/auth";
 import { bootstrapRoutes } from "./routes/bootstrap";
 import { devSessionRoutes } from "./routes/dev-session";
 import { healthRoutes } from "./routes/health";
@@ -11,10 +12,23 @@ export { SyncCoordinator } from "./durable/SyncCoordinator";
 const app = new Hono<{ Bindings: Env }>();
 
 app.route("/", healthRoutes);
+app.route("/", authRoutes);
 app.route("/", devSessionRoutes);
 app.route("/", bootstrapRoutes);
 app.route("/", folderRoutes);
 app.route("/", noteRoutes);
 app.route("/", syncRoutes);
 
-export default app;
+export default {
+  fetch: app.fetch,
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    await env.DB.prepare(
+      `DELETE FROM notes WHERE deleted_at IS NOT NULL
+       AND deleted_at < datetime('now', '-30 days')`,
+    ).run();
+    await env.DB.prepare(
+      `DELETE FROM folders WHERE deleted_at IS NOT NULL
+       AND deleted_at < datetime('now', '-30 days')`,
+    ).run();
+  },
+};

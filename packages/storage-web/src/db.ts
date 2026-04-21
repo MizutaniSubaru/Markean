@@ -1,5 +1,5 @@
 import Dexie, { type Table } from "dexie";
-import type { NoteRecord, PendingChange } from "@markean/domain";
+import type { NoteRecord, FolderRecord, PendingChange } from "@markean/domain";
 
 type SyncStateRecord = {
   key: string;
@@ -8,6 +8,7 @@ type SyncStateRecord = {
 
 export class MarkeanWebDatabase extends Dexie {
   notes!: Table<NoteRecord, string>;
+  folders!: Table<FolderRecord, string>;
   pendingChanges!: Table<PendingChange, string>;
   syncState!: Table<SyncStateRecord, string>;
 
@@ -16,6 +17,13 @@ export class MarkeanWebDatabase extends Dexie {
 
     this.version(1).stores({
       notes: "id, folderId, updatedAt",
+      pendingChanges: "clientChangeId, entityId, operation",
+      syncState: "key",
+    });
+
+    this.version(2).stores({
+      notes: "id, folderId, updatedAt",
+      folders: "id, sortOrder",
       pendingChanges: "clientChangeId, entityId, operation",
       syncState: "key",
     });

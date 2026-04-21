@@ -2,43 +2,79 @@ import "fake-indexeddb/auto";
 
 import { describe, expect, it } from "vitest";
 import { createWebDatabase } from "../../storage-web/src/index";
-import { queueNoteUpdate, reconcilePushResult } from "../src/index";
+import { getDeviceId, pushChanges, queueChange } from "../src/index";
 
 describe("sync engine queue", () => {
-  it("creates a note and pending change from the shared domain helpers", async () => {
+  it("queues a pending change via the shared domain helper", async () => {
     const db = createWebDatabase("test-markean-sync");
 
-    await queueNoteUpdate(db, {
-      noteId: "note_1",
-      folderId: "folder_1",
-      title: "Draft",
-      bodyMd: "# Draft\n\nHello world",
+    await queueChange(db, {
+      entityType: "note",
+      entityId: "note_1",
+      operation: "update",
+      baseRevision: 1,
     });
 
-    const [note] = await db.notes.toArray();
     const [change] = await db.pendingChanges.toArray();
 
-    expect(note?.bodyPlain).toBe("Draft Hello world");
-    expect(note?.currentRevision).toBe(1);
     expect(change?.entityType).toBe("note");
     expect(change?.entityId).toBe("note_1");
+    expect(change?.operation).toBe("update");
     expect(change?.baseRevision).toBe(1);
+    expect(change?.clientChangeId).toMatch(/^chg_/);
   });
 
-  it("creates a conflicted copy when the server rejects a stale revision", () => {
-    const result = reconcilePushResult({
-      accepted: [],
-      conflicts: [
-        {
-          entityId: "note_1",
-          serverRevision: 4,
-          localTitle: "Draft",
-          localBodyMd: "Stale edit",
-        },
-      ],
+  it("persists and reuses a generated device id", async () => {
+    const db = createWebDatabase("test-markean-device-id");
+
+    const firstId = await getDeviceId(db);
+    const secondId = await getDeviceId(db);
+    const stored = await db.syncState.get("deviceId");
+
+    expect(firstId).toMatch(/^dev_/);
+    expect(secondId).toBe(firstId);
+    expect(stored?.value).toBe(firstId);
+  });
+
+  it("reconciles the originating device with accepted server state after push", async () => {
+    const db = createWebDatabase(`test-markean-push-reconcile-${crypto.randomUUID()}`);
+
+    await db.notes.put({
+      id: "note_1",
+      folderId: "folder_1",
+      title: "Local title",
+      bodyMd: "Local body",
+      bodyPlain: "Local body",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
     });
 
-    expect(result.conflictedCopies).toHaveLength(1);
-    expect(result.conflictedCopies[0]?.title).toContain("Conflicted Copy");
+    await queueChange(db, {
+      entityType: "note",
+      entityId: "note_1",
+      operation: "update",
+      baseRevision: 1,
+    });
+
+    const apiClient = {
+      async syncPush() {
+        return {
+          accepted: [{ acceptedRevision: 2, cursor: 10 }],
+          conflicts: [],
+        };
+      },
+      async syncPull() {
+        throw new Error("syncPull should not be called");
+      },
+    };
+
+    await pushChanges(db, apiClient, "device_1");
+
+    expect(await db.pendingChanges.toArray()).toHaveLength(0);
+    expect(await db.syncState.get("syncCursor")).toEqual({ key: "syncCursor", value: "10" });
+    await expect(db.notes.get("note_1")).resolves.toMatchObject({
+      currentRevision: 2,
+    });
   });
 });

@@ -2,7 +2,7 @@ export type PendingChange = {
   clientChangeId: string;
   entityType: "folder" | "note";
   entityId: string;
-  operation: "create" | "update" | "delete" | "move";
+  operation: "create" | "update" | "delete";
   baseRevision: number;
 };
 

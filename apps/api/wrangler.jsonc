@@ -1,8 +1,17 @@
 {
+  "vars": {
+    "APP_ENV": "dev",
+    "APP_BASE_URL": "http://127.0.0.1:4173",
+    "API_BASE_URL": "http://127.0.0.1:8787",
+    "MAGIC_LINK_TTL_MINUTES": "20"
+  },
   "name": "markean-api",
   "main": "src/index.ts",
   "compatibility_date": "2026-04-07",
   "compatibility_flags": ["nodejs_compat"],
+  "triggers": {
+    "crons": ["0 3 * * *"]
+  },
   "durable_objects": {
     "bindings": [
       {
