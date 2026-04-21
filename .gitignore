@@ -3,6 +3,7 @@
 .claude/
 .superpowers/
 .worktrees/
+worktrees/
 .vscode/
 node_modules/
 /apps/web/dist/
