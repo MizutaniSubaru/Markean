@@ -77,4 +77,44 @@ describe("sync engine queue", () => {
       currentRevision: 2,
     });
   });
+
+  it("returns conflicts from the server response", async () => {
+    const db = createWebDatabase(`test-markean-push-conflicts-${crypto.randomUUID()}`);
+
+    await db.notes.put({
+      id: "note_conflict",
+      folderId: "folder_1",
+      title: "Stale",
+      bodyMd: "Stale body",
+      bodyPlain: "Stale body",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    });
+
+    await queueChange(db, {
+      entityType: "note",
+      entityId: "note_conflict",
+      operation: "update",
+      baseRevision: 1,
+    });
+
+    const apiClient = {
+      async syncPush() {
+        return {
+          accepted: [],
+          conflicts: [{ entityType: "note", entityId: "note_conflict", serverRevision: 5 }],
+        };
+      },
+      async syncPull() {
+        throw new Error("syncPull should not be called");
+      },
+    };
+
+    const result = await pushChanges(db, apiClient, "device_1");
+
+    expect(result.conflicts).toEqual([
+      { entityType: "note", entityId: "note_conflict", serverRevision: 5 },
+    ]);
+  });
 });

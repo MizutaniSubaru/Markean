@@ -54,6 +54,12 @@ type ApiClient = {
   }>;
 };
 
+type SyncConflict = {
+  entityType: string;
+  entityId: string;
+  serverRevision: number;
+};
+
 export function queueChange(
   db: SyncableDatabase,
   input: Omit<PendingChange, "clientChangeId">,
@@ -66,9 +72,9 @@ export async function pushChanges(
   db: SyncableDatabase,
   apiClient: ApiClient,
   deviceId: string,
-): Promise<void> {
+): Promise<{ conflicts: SyncConflict[] }> {
   const pending = await db.pendingChanges.toArray();
-  if (pending.length === 0) return;
+  if (pending.length === 0) return { conflicts: [] };
 
   const changes = [];
   for (const p of pending) {
@@ -121,6 +127,8 @@ export async function pushChanges(
   if (latestCursor !== undefined) {
     await db.syncState.put({ key: "syncCursor", value: String(latestCursor) });
   }
+
+  return { conflicts: result.conflicts ?? [] };
 }
 
 export async function pullChanges(
@@ -185,8 +193,9 @@ export async function getDeviceId(db: SyncableDatabase): Promise<string> {
 export async function runSyncCycle(
   db: SyncableDatabase,
   apiClient: ApiClient,
-): Promise<void> {
+): Promise<{ conflicts: SyncConflict[] }> {
   const deviceId = await getDeviceId(db);
-  await pushChanges(db, apiClient, deviceId);
+  const { conflicts } = await pushChanges(db, apiClient, deviceId);
   await pullChanges(db, apiClient, deviceId);
+  return { conflicts };
 }
