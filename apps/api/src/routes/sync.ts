@@ -58,14 +58,19 @@ export const syncRoutes = new Hono<AuthEnv>()
     const coordinator = c.env.SYNC_COORDINATOR.getByName(userId);
     const accepted = [];
 
-    for (const change of body.changes) {
-      accepted.push(
-        await coordinator.applyChange({
-          ...change,
-          userId,
-          deviceId: body.deviceId,
-        }),
-      );
+    try {
+      for (const change of body.changes) {
+        accepted.push(
+          await coordinator.applyChange({
+            ...change,
+            userId,
+            deviceId: body.deviceId,
+          }),
+        );
+      }
+    } catch (error) {
+      console.error(error);
+      return c.json({ error: "sync_push_failed" }, 500);
     }
 
     return c.json({
