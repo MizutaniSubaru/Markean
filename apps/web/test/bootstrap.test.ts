@@ -440,4 +440,83 @@ describe("bootstrapApp", () => {
       ]),
     );
   });
+
+  it("merges remote records when same ID pending changes are for a different entity type", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const pendingFolder: FolderRecord = {
+      id: "shared",
+      name: "Pending folder",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const pendingNote: NoteRecord = {
+      id: "shared-folder",
+      folderId: "shared",
+      title: "Pending note",
+      bodyMd: "# Pending",
+      bodyPlain: "Pending",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(pendingFolder);
+    await localDb.notes.put(pendingNote);
+    await queueChange(localDb, {
+      entityType: "folder",
+      entityId: pendingFolder.id,
+      operation: "update",
+      baseRevision: pendingFolder.currentRevision,
+    });
+    await queueChange(localDb, {
+      entityType: "note",
+      entityId: pendingNote.id,
+      operation: "update",
+      baseRevision: pendingNote.currentRevision,
+    });
+    localDb.close();
+
+    const remoteNoteWithFolderPendingId: NoteRecord = {
+      id: pendingFolder.id,
+      folderId: "shared-folder",
+      title: "Remote note with folder-pending ID",
+      bodyMd: "# Remote note",
+      bodyPlain: "Remote note",
+      currentRevision: 5,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const remoteFolderWithNotePendingId: FolderRecord = {
+      id: pendingNote.id,
+      name: "Remote folder with note-pending ID",
+      sortOrder: 1,
+      currentRevision: 6,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [remoteFolderWithNotePendingId],
+          notes: [remoteNoteWithFolderPendingId],
+          syncCursor: 11,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.notes.get(remoteNoteWithFolderPendingId.id)).resolves.toEqual(
+      remoteNoteWithFolderPendingId,
+    );
+    await expect(db.folders.get(remoteFolderWithNotePendingId.id)).resolves.toEqual(
+      remoteFolderWithNotePendingId,
+    );
+    await expect(db.folders.get(pendingFolder.id)).resolves.toEqual(pendingFolder);
+    await expect(db.notes.get(pendingNote.id)).resolves.toEqual(pendingNote);
+  });
 });

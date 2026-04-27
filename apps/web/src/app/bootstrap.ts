@@ -256,8 +256,8 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
 
     await db.transaction("rw", db.notes, db.folders, db.pendingChanges, db.syncState, async () => {
       for (const note of serverNotes) {
-        const pendingCount = await db.pendingChanges.where("entityId").equals(note.id).count();
-        if (pendingCount > 0) continue;
+        const pendingChanges = await db.pendingChanges.where("entityId").equals(note.id).toArray();
+        if (pendingChanges.some((change) => change.entityType === "note")) continue;
 
         const local = await db.notes.get(note.id);
         if (!local || (note.currentRevision ?? 0) > (local.currentRevision ?? 0)) {
@@ -266,8 +266,11 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       }
 
       for (const folder of serverFolders) {
-        const pendingCount = await db.pendingChanges.where("entityId").equals(folder.id).count();
-        if (pendingCount > 0) continue;
+        const pendingChanges = await db.pendingChanges
+          .where("entityId")
+          .equals(folder.id)
+          .toArray();
+        if (pendingChanges.some((change) => change.entityType === "folder")) continue;
 
         const local = await db.folders.get(folder.id);
         if (!local || (folder.currentRevision ?? 0) > (local.currentRevision ?? 0)) {
