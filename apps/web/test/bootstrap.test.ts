@@ -639,6 +639,73 @@ describe("bootstrapApp", () => {
     });
   });
 
+  it("keeps migrated selection available until a current bootstrap completes", async () => {
+    const { store } = installStorageMock();
+    store.set(
+      "markean:workspace",
+      JSON.stringify({
+        folders: [
+          { id: "first", name: "First" },
+          { id: "second", name: "Second" },
+        ],
+        notes: [
+          {
+            id: "first_note",
+            folderId: "first",
+            title: "First note",
+            body: "# First",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+          {
+            id: "second_note",
+            folderId: "second",
+            title: "Second note",
+            body: "# Second",
+            updatedAt: "2026-04-21T10:00:00.000Z",
+          },
+        ],
+        activeFolderId: "second",
+        activeNoteId: "second_note",
+      }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          json: vi.fn().mockResolvedValue({
+            folders: [],
+            notes: [],
+            syncCursor: 1,
+          }),
+        })
+        .mockRejectedValue(new Error("offline")),
+    );
+    let secondRun: Promise<void> | null = null;
+    let thirdRun: Promise<void> | null = null;
+    setBootstrapConcurrencyHooksForTests({
+      afterMigration: () => {
+        if (!secondRun) {
+          secondRun = bootstrapApp("https://example.test");
+        }
+      },
+      beforeRemoteWrite: () => {
+        if (!thirdRun) {
+          thirdRun = bootstrapApp("https://example.test");
+        }
+      },
+    });
+
+    await bootstrapApp("https://example.test");
+    await secondRun;
+    await thirdRun;
+
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: "second",
+      activeNoteId: "second_note",
+    });
+  });
+
   it("preserves empty migrated legacy active selection during bootstrap", async () => {
     const { store } = installStorageMock();
     store.set(
@@ -949,6 +1016,107 @@ describe("bootstrapApp", () => {
       value: "37",
     });
     expect(getScheduler()).not.toBeNull();
+  });
+
+  it("rejects deleted remote folders and notes that reference them", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "local-folder",
+      name: "Local",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.syncState.put({ key: "syncCursor", value: "37" });
+    localDb.close();
+    const remoteFolder: FolderRecord = {
+      id: "remote-deleted-folder",
+      name: "Remote deleted",
+      sortOrder: 1,
+      currentRevision: 2,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+      deletedAt: "2026-04-23T11:00:00.000Z",
+    };
+    const remoteNote: NoteRecord = {
+      id: "remote-note",
+      folderId: remoteFolder.id,
+      title: "Remote note",
+      bodyMd: "# Remote",
+      bodyPlain: "Remote",
+      currentRevision: 2,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+      deletedAt: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [remoteFolder],
+          notes: [remoteNote],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+    await expect(db.folders.get(remoteFolder.id)).resolves.toBeUndefined();
+    await expect(db.notes.get(remoteNote.id)).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "37",
+    });
+  });
+
+  it("rejects deleted remote notes from the active bootstrap snapshot", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "local-folder",
+      name: "Local",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.syncState.put({ key: "syncCursor", value: "37" });
+    localDb.close();
+    const remoteNote: NoteRecord = {
+      id: "remote-deleted-note",
+      folderId: localFolder.id,
+      title: "Remote note",
+      bodyMd: "# Remote",
+      bodyPlain: "Remote",
+      currentRevision: 2,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+      deletedAt: "2026-04-23T11:00:00.000Z",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [remoteNote],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+    await expect(db.notes.get(remoteNote.id)).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "37",
+    });
   });
 
   it("clears stale active note when fallback folder has no active notes", async () => {

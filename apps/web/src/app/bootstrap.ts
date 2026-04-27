@@ -79,10 +79,6 @@ function isNonBlank(value: string): boolean {
   return value.trim().length > 0;
 }
 
-function isDeletedAt(value: unknown): value is string | null {
-  return value === null || typeof value === "string";
-}
-
 function isRemoteFolderRecord(value: unknown): value is FolderRecord {
   if (!value || typeof value !== "object") return false;
   const folder = value as Record<string, unknown>;
@@ -95,7 +91,7 @@ function isRemoteFolderRecord(value: unknown): value is FolderRecord {
     typeof folder.currentRevision === "number" &&
     Number.isFinite(folder.currentRevision) &&
     typeof folder.updatedAt === "string" &&
-    isDeletedAt(folder.deletedAt)
+    folder.deletedAt === null
   );
 }
 
@@ -113,7 +109,7 @@ function isRemoteNoteRecord(value: unknown): value is NoteRecord {
     typeof note.currentRevision === "number" &&
     Number.isFinite(note.currentRevision) &&
     typeof note.updatedAt === "string" &&
-    isDeletedAt(note.deletedAt)
+    note.deletedAt === null
   );
 }
 
@@ -455,10 +451,8 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
   useNotesStore.getState().loadNotes(localNotes);
   useFoldersStore.getState().loadFolders(localFolders);
   const selectionToRestore = pendingMigratedSelection ?? migratedSelection;
+  const consumedMigratedSelection = selectionToRestore !== null;
   restoreEditorSelection(localNotes, localFolders, selectionToRestore);
-  if (selectionToRestore !== null) {
-    pendingMigratedSelection = null;
-  }
 
   const syncService = createSyncService(apiClient);
   const localScheduler = createSyncScheduler(syncService.executeSyncCycle);
@@ -579,4 +573,7 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
 
   scheduler = localScheduler;
   scheduler.start();
+  if (consumedMigratedSelection) {
+    pendingMigratedSelection = null;
+  }
 }
