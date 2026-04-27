@@ -587,6 +587,57 @@ describe("bootstrapApp", () => {
     });
   });
 
+  it("preserves migrated active selection when the migrating bootstrap becomes stale before restore", async () => {
+    const { store } = installStorageMock();
+    store.set(
+      "markean:workspace",
+      JSON.stringify({
+        folders: [
+          { id: "first", name: "First" },
+          { id: "second", name: "Second" },
+        ],
+        notes: [
+          {
+            id: "first_note",
+            folderId: "first",
+            title: "First note",
+            body: "# First",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+          {
+            id: "second_note",
+            folderId: "second",
+            title: "Second note",
+            body: "# Second",
+            updatedAt: "2026-04-21T10:00:00.000Z",
+          },
+        ],
+        activeFolderId: "second",
+        activeNoteId: "second_note",
+      }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("offline")),
+    );
+    let latestRun: Promise<void> | null = null;
+    setBootstrapConcurrencyHooksForTests({
+      afterMigration: () => {
+        if (!latestRun) {
+          latestRun = bootstrapApp("https://example.test");
+        }
+      },
+    });
+
+    await bootstrapApp("https://example.test");
+    await latestRun;
+
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: "second",
+      activeNoteId: "second_note",
+    });
+  });
+
   it("preserves empty migrated legacy active selection during bootstrap", async () => {
     const { store } = installStorageMock();
     store.set(

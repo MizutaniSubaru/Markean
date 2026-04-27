@@ -38,6 +38,7 @@ type MigrationSelection = {
 
 type BootstrapConcurrencyHooks = {
   beforeMigrationWrite?: () => Promise<void> | void;
+  afterMigration?: () => Promise<void> | void;
   beforeWelcomeWrite?: () => Promise<void> | void;
   beforeRemoteWrite?: () => Promise<void> | void;
 };
@@ -318,6 +319,7 @@ async function ensureWelcomeNote(): Promise<void> {
 
 let scheduler: ReturnType<typeof createSyncScheduler> | null = null;
 let bootstrapGeneration = 0;
+let pendingMigratedSelection: MigrationSelection | null = null;
 
 export function getScheduler(): ReturnType<typeof createSyncScheduler> | null {
   return scheduler;
@@ -328,6 +330,7 @@ export function resetSchedulerForTests(): void {
   scheduler?.stop();
   scheduler = null;
   concurrencyHooks = {};
+  pendingMigratedSelection = null;
 }
 
 function restoreEditorSelection(
@@ -366,6 +369,10 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
   const isStale = () => generation !== bootstrapGeneration;
 
   const migratedSelection = await migrateFromLocalStorageInternal();
+  if (migratedSelection !== null) {
+    pendingMigratedSelection = migratedSelection;
+  }
+  await concurrencyHooks.afterMigration?.();
   if (isStale()) {
     db.close();
     return;
@@ -383,7 +390,11 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
   }
   useNotesStore.getState().loadNotes(localNotes);
   useFoldersStore.getState().loadFolders(localFolders);
-  restoreEditorSelection(localNotes, localFolders, migratedSelection);
+  const selectionToRestore = pendingMigratedSelection ?? migratedSelection;
+  restoreEditorSelection(localNotes, localFolders, selectionToRestore);
+  if (selectionToRestore !== null) {
+    pendingMigratedSelection = null;
+  }
 
   const syncService = createSyncService(apiClient);
   const localScheduler = createSyncScheduler(syncService.executeSyncCycle);
