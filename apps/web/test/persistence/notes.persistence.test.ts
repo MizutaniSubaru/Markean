@@ -3,7 +3,7 @@ import "fake-indexeddb/auto";
 import type { NoteRecord } from "@markean/domain";
 import { createWebDatabase, type MarkeanWebDatabase } from "@markean/storage-web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { initDb } from "../../src/features/notes/persistence/db";
+import { getDb, initDb, resetDbForTests } from "../../src/features/notes/persistence/db";
 import {
   createNote,
   deleteNote,
@@ -39,17 +39,18 @@ describe("notes.persistence", () => {
 
   beforeEach(() => {
     db = createWebDatabase(`test-notes-persistence-${crypto.randomUUID()}`);
+    resetDbForTests();
     initDb(db);
   });
 
   afterEach(async () => {
     vi.useRealTimers();
     await db.delete();
+    resetDbForTests();
   });
 
-  it("getDb throws before initDb is called", async () => {
-    vi.resetModules();
-    const { getDb } = await import("../../src/features/notes/persistence/db");
+  it("getDb throws before initDb is called", () => {
+    resetDbForTests();
 
     expect(() => getDb()).toThrow("Database not initialized. Call initDb() first.");
   });
@@ -58,7 +59,9 @@ describe("notes.persistence", () => {
     await createNote(note1);
 
     expect(await db.notes.get("note_1")).toEqual(note1);
-    const [change] = await db.pendingChanges.toArray();
+    const changes = await db.pendingChanges.toArray();
+    expect(changes).toHaveLength(1);
+    const [change] = changes;
     expect(change).toMatchObject({
       entityType: "note",
       entityId: "note_1",
@@ -66,6 +69,17 @@ describe("notes.persistence", () => {
       baseRevision: 0,
     });
     expect(change.clientChangeId).toMatch(/^chg_/);
+  });
+
+  it("rolls back note creation when queueing the pending change fails", async () => {
+    db.pendingChanges.hook("creating", () => {
+      throw new Error("pending change failed");
+    });
+
+    await expect(createNote(note1)).rejects.toThrow("pending change failed");
+
+    await expect(db.notes.toArray()).resolves.toEqual([]);
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(0);
   });
 
   it("reads all notes", async () => {
@@ -93,13 +107,29 @@ describe("notes.persistence", () => {
       title: "Updated",
       updatedAt: "2026-04-27T12:34:56.789Z",
     });
-    const [change] = await db.pendingChanges.toArray();
+    const changes = await db.pendingChanges.toArray();
+    expect(changes).toHaveLength(1);
+    const [change] = changes;
     expect(change).toMatchObject({
       entityType: "note",
       entityId: "note_1",
       operation: "update",
       baseRevision: 3,
     });
+  });
+
+  it("rolls back note updates when queueing the pending change fails", async () => {
+    await db.notes.put(note1);
+    db.pendingChanges.hook("creating", () => {
+      throw new Error("pending change failed");
+    });
+
+    await expect(updateNote("note_1", { title: "Updated" })).rejects.toThrow(
+      "pending change failed",
+    );
+
+    await expect(db.notes.get("note_1")).resolves.toEqual(note1);
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(0);
   });
 
   it("updating a missing note does nothing and queues no change", async () => {
@@ -120,13 +150,27 @@ describe("notes.persistence", () => {
       ...note1,
       deletedAt: "2026-04-27T12:34:56.789Z",
     });
-    const [change] = await db.pendingChanges.toArray();
+    const changes = await db.pendingChanges.toArray();
+    expect(changes).toHaveLength(1);
+    const [change] = changes;
     expect(change).toMatchObject({
       entityType: "note",
       entityId: "note_1",
       operation: "delete",
       baseRevision: 3,
     });
+  });
+
+  it("rolls back note deletion when queueing the pending change fails", async () => {
+    await db.notes.put(note1);
+    db.pendingChanges.hook("creating", () => {
+      throw new Error("pending change failed");
+    });
+
+    await expect(deleteNote("note_1")).rejects.toThrow("pending change failed");
+
+    await expect(db.notes.get("note_1")).resolves.toEqual(note1);
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(0);
   });
 
   it("deleting a missing note does nothing and queues no change", async () => {
