@@ -62,6 +62,14 @@ function createMockApiClient(options?: { conflicts?: Conflict[] }) {
   };
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 function resetStores(): void {
   useNotesStore.setState({ notes: [] });
   useFoldersStore.setState({ folders: [] });
@@ -210,6 +218,85 @@ describe("sync.service", () => {
     });
   });
 
+  it("preserves the local edit in the conflict copy before pulling server events", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    await db.notes.put(localNote);
+    await queueChange(db, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "update",
+      baseRevision: localNote.currentRevision,
+    });
+    const serverNote: NoteRecord = {
+      ...localNote,
+      title: "Server note",
+      bodyMd: "# Server",
+      bodyPlain: "Server",
+      currentRevision: 5,
+      updatedAt: "2026-04-26T09:00:00.000Z",
+    };
+    const apiClient = createMockApiClient({
+      conflicts: [{ entityType: "note", entityId: localNote.id, serverRevision: 5 }],
+    });
+    apiClient.syncPull.mockResolvedValue({
+      nextCursor: 6,
+      events: [
+        {
+          cursor: 6,
+          entityType: "note",
+          entityId: localNote.id,
+          operation: "update",
+          revisionNumber: serverNote.currentRevision,
+          sourceDeviceId: "server_device",
+          entity: serverNote,
+        },
+      ],
+    });
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    expect(await db.notes.get(localNote.id)).toEqual(serverNote);
+    const copy = useNotesStore
+      .getState()
+      .notes.find((note) => note.id !== localNote.id);
+    expect(copy).toMatchObject({
+      folderId: localNote.folderId,
+      title: "Local note (conflict copy)",
+      bodyMd: localNote.bodyMd,
+      bodyPlain: localNote.bodyPlain,
+      currentRevision: 0,
+      updatedAt: "2026-04-27T12:34:56.789Z",
+      deletedAt: null,
+    });
+  });
+
+  it("marks error and skips pull when conflict handling fails", async () => {
+    await db.notes.put(localNote);
+    await queueChange(db, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "update",
+      baseRevision: localNote.currentRevision,
+    });
+    db.pendingChanges.hook("creating", () => {
+      throw new Error("conflict copy failed");
+    });
+    const apiClient = createMockApiClient({
+      conflicts: [{ entityType: "note", entityId: localNote.id, serverRevision: 5 }],
+    });
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    expect(apiClient.syncPull).not.toHaveBeenCalled();
+    expect(useSyncStore.getState()).toMatchObject({
+      status: "error",
+      lastSyncedAt: null,
+    });
+  });
+
   it("calls syncPull and updates the DB sync cursor on success", async () => {
     const apiClient = createMockApiClient();
     apiClient.syncPull.mockResolvedValue({ nextCursor: 9, events: [] });
@@ -265,5 +352,37 @@ describe("sync.service", () => {
       key: "syncCursor",
       value: "12",
     });
+  });
+
+  it("shares one in-flight sync cycle across concurrent calls", async () => {
+    await db.notes.put(localNote);
+    await queueChange(db, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "update",
+      baseRevision: localNote.currentRevision,
+    });
+    const apiClient = createMockApiClient();
+    const pushResult = createDeferred<{
+      accepted: Array<{ acceptedRevision: number; cursor: number }>;
+      conflicts: Conflict[];
+    }>();
+    apiClient.syncPush.mockReturnValue(pushResult.promise);
+    apiClient.syncPull.mockResolvedValue({ nextCursor: 4, events: [] });
+    const service = createSyncService(apiClient);
+
+    const first = service.executeSyncCycle();
+    const second = service.executeSyncCycle();
+    await vi.waitFor(() => expect(apiClient.syncPush).toHaveBeenCalledTimes(1));
+
+    pushResult.resolve({
+      accepted: [{ acceptedRevision: 2, cursor: 3 }],
+      conflicts: [],
+    });
+    await Promise.all([first, second]);
+
+    expect(apiClient.syncPush).toHaveBeenCalledTimes(1);
+    expect(apiClient.syncPull).toHaveBeenCalledTimes(1);
+    expect(useSyncStore.getState().status).toBe("idle");
   });
 });
