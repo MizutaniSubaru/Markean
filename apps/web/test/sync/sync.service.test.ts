@@ -1,0 +1,269 @@
+import "fake-indexeddb/auto";
+
+import type { FolderRecord, NoteRecord } from "@markean/domain";
+import { queueChange } from "@markean/sync-core";
+import { createWebDatabase, type MarkeanWebDatabase } from "@markean/storage-web";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { initDb, resetDbForTests } from "../../src/features/notes/persistence/db";
+import { createSyncService } from "../../src/features/notes/sync/sync.service";
+import { useFoldersStore } from "../../src/features/notes/store/folders.store";
+import { useNotesStore } from "../../src/features/notes/store/notes.store";
+import { useSyncStore } from "../../src/features/notes/store/sync.store";
+
+const localNote: NoteRecord = {
+  id: "note_local",
+  folderId: "folder_local",
+  title: "Local note",
+  bodyMd: "# Local",
+  bodyPlain: "Local",
+  currentRevision: 1,
+  updatedAt: "2026-04-21T09:00:00.000Z",
+  deletedAt: null,
+};
+
+const pulledNote: NoteRecord = {
+  id: "note_pulled",
+  folderId: "folder_pulled",
+  title: "Pulled note",
+  bodyMd: "# Pulled",
+  bodyPlain: "Pulled",
+  currentRevision: 7,
+  updatedAt: "2026-04-22T10:00:00.000Z",
+  deletedAt: null,
+};
+
+const localFolder: FolderRecord = {
+  id: "folder_local",
+  name: "Local",
+  sortOrder: 0,
+  currentRevision: 1,
+  updatedAt: "2026-04-21T09:00:00.000Z",
+  deletedAt: null,
+};
+
+const pulledFolder: FolderRecord = {
+  id: "folder_pulled",
+  name: "Pulled",
+  sortOrder: 1,
+  currentRevision: 8,
+  updatedAt: "2026-04-22T10:00:00.000Z",
+  deletedAt: null,
+};
+
+type Conflict = { entityType: string; entityId: string; serverRevision: number };
+
+function createMockApiClient(options?: { conflicts?: Conflict[] }) {
+  return {
+    bootstrap: vi.fn(),
+    syncPush: vi.fn().mockResolvedValue({ accepted: [], conflicts: options?.conflicts ?? [] }),
+    syncPull: vi.fn().mockResolvedValue({ nextCursor: 1, events: [] }),
+    restoreNote: vi.fn(),
+    listTrash: vi.fn(),
+  };
+}
+
+function resetStores(): void {
+  useNotesStore.setState({ notes: [] });
+  useFoldersStore.setState({ folders: [] });
+  useSyncStore.setState({
+    status: "idle",
+    isOnline: true,
+    lastSyncedAt: null,
+  });
+}
+
+describe("sync.service", () => {
+  let db: MarkeanWebDatabase;
+
+  beforeEach(() => {
+    db = createWebDatabase(`test-sync-service-${crypto.randomUUID()}`);
+    resetDbForTests();
+    initDb(db);
+    resetStores();
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    resetStores();
+    await db.delete();
+    resetDbForTests();
+  });
+
+  it("runs a sync cycle and transitions status idle -> syncing -> idle", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    const apiClient = createMockApiClient();
+    apiClient.syncPull.mockImplementation(async () => {
+      expect(useSyncStore.getState().status).toBe("syncing");
+      return { nextCursor: 1, events: [] };
+    });
+    const service = createSyncService(apiClient);
+
+    expect(useSyncStore.getState().status).toBe("idle");
+
+    await service.executeSyncCycle();
+
+    expect(useSyncStore.getState()).toMatchObject({
+      status: "idle",
+      lastSyncedAt: "2026-04-27T12:34:56.789Z",
+    });
+  });
+
+  it("sets error status on failure without marking lastSyncedAt", async () => {
+    const apiClient = createMockApiClient();
+    apiClient.syncPull.mockRejectedValue(new Error("network failed"));
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    expect(useSyncStore.getState()).toMatchObject({
+      status: "error",
+      lastSyncedAt: null,
+    });
+  });
+
+  it("hydrates notes store after pull", async () => {
+    const apiClient = createMockApiClient();
+    apiClient.syncPull.mockResolvedValue({
+      nextCursor: 2,
+      events: [
+        {
+          cursor: 2,
+          entityType: "note",
+          entityId: pulledNote.id,
+          operation: "create",
+          revisionNumber: pulledNote.currentRevision,
+          sourceDeviceId: "server_device",
+          entity: pulledNote,
+        },
+      ],
+    });
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    expect(useNotesStore.getState().notes).toEqual([pulledNote]);
+  });
+
+  it("hydrates folders store after sync", async () => {
+    const apiClient = createMockApiClient();
+    apiClient.syncPull.mockResolvedValue({
+      nextCursor: 2,
+      events: [
+        {
+          cursor: 2,
+          entityType: "folder",
+          entityId: pulledFolder.id,
+          operation: "create",
+          revisionNumber: pulledFolder.currentRevision,
+          sourceDeviceId: "server_device",
+          entity: pulledFolder,
+        },
+      ],
+    });
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    expect(useFoldersStore.getState().folders).toEqual([pulledFolder]);
+  });
+
+  it("creates a conflict copy when sync returns a note conflict", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    await db.notes.put(localNote);
+    await queueChange(db, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "update",
+      baseRevision: localNote.currentRevision,
+    });
+    const apiClient = createMockApiClient({
+      conflicts: [{ entityType: "note", entityId: localNote.id, serverRevision: 5 }],
+    });
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    const notes = useNotesStore.getState().notes;
+    expect(notes).toHaveLength(2);
+    expect(notes).toContainEqual(localNote);
+    const copy = notes.find((note) => note.id !== localNote.id);
+    expect(copy).toMatchObject({
+      folderId: localNote.folderId,
+      title: "Local note (conflict copy)",
+      bodyMd: localNote.bodyMd,
+      bodyPlain: localNote.bodyPlain,
+      currentRevision: 0,
+      updatedAt: "2026-04-27T12:34:56.789Z",
+      deletedAt: null,
+    });
+    expect(copy!.id).toMatch(/^note_/);
+    await expect(db.notes.get(copy!.id)).resolves.toEqual(copy);
+    const changes = await db.pendingChanges.toArray();
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({
+      entityType: "note",
+      entityId: copy!.id,
+      operation: "create",
+      baseRevision: 0,
+    });
+  });
+
+  it("calls syncPull and updates the DB sync cursor on success", async () => {
+    const apiClient = createMockApiClient();
+    apiClient.syncPull.mockResolvedValue({ nextCursor: 9, events: [] });
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    expect(apiClient.syncPull).toHaveBeenCalledWith(0);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "9",
+    });
+  });
+
+  it("pushes pending changes before pulling", async () => {
+    await db.folders.put(localFolder);
+    await db.notes.put(localNote);
+    await queueChange(db, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "update",
+      baseRevision: localNote.currentRevision,
+    });
+    const apiClient = createMockApiClient();
+    apiClient.syncPush.mockResolvedValue({
+      accepted: [{ acceptedRevision: 2, cursor: 11 }],
+      conflicts: [],
+    });
+    apiClient.syncPull.mockResolvedValue({ nextCursor: 12, events: [] });
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    expect(apiClient.syncPush).toHaveBeenCalledWith({
+      deviceId: expect.stringMatching(/^dev_/),
+      changes: [
+        {
+          clientChangeId: expect.stringMatching(/^chg_/),
+          entityType: "note",
+          entityId: localNote.id,
+          operation: "update",
+          baseRevision: localNote.currentRevision,
+          payload: {
+            folderId: localNote.folderId,
+            title: localNote.title,
+            bodyMd: localNote.bodyMd,
+          },
+        },
+      ],
+    });
+    expect(apiClient.syncPull).toHaveBeenCalledWith(11);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "12",
+    });
+  });
+});
