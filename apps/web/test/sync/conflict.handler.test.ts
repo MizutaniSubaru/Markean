@@ -69,7 +69,7 @@ describe("conflict.handler", () => {
       bodyPlain: note1.bodyPlain,
       currentRevision: 0,
       updatedAt: "2026-04-27T12:34:56.789Z",
-      deletedAt: note1.deletedAt,
+      deletedAt: null,
     });
     expect(copy!.id).toMatch(/^note_/);
     expect(copy!.id).not.toBe(note1.id);
@@ -134,7 +134,7 @@ describe("conflict.handler", () => {
       folderId: note2.folderId,
       bodyMd: note2.bodyMd,
       bodyPlain: note2.bodyPlain,
-      deletedAt: note2.deletedAt,
+      deletedAt: null,
     });
 
     const changes = await db.pendingChanges.toArray();
@@ -144,5 +144,46 @@ describe("conflict.handler", () => {
     );
     expect(changes.every((change) => change.operation === "create")).toBe(true);
     expect(changes.every((change) => change.baseRevision === 0)).toBe(true);
+  });
+
+  it("deduplicates duplicate note conflicts", async () => {
+    await db.notes.put(note1);
+    useNotesStore.getState().loadNotes([note1]);
+
+    await handleConflicts([
+      { entityType: "note", entityId: "note_1", serverRevision: 5 },
+      { entityType: "note", entityId: "note_1", serverRevision: 5 },
+    ]);
+
+    const storeNotes = useNotesStore.getState().notes;
+    const copies = storeNotes.filter((n) => n.id !== "note_1");
+    expect(storeNotes).toHaveLength(2);
+    expect(copies).toHaveLength(1);
+
+    const changes = await db.pendingChanges.toArray();
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({
+      entityType: "note",
+      entityId: copies[0].id,
+      operation: "create",
+      baseRevision: 0,
+    });
+  });
+
+  it("does not update the store or leave a copy when creating the copy fails", async () => {
+    await db.notes.put(note1);
+    useNotesStore.getState().loadNotes([note1]);
+    db.pendingChanges.hook("creating", () => {
+      throw new Error("pending change failed");
+    });
+
+    await expect(
+      handleConflicts([{ entityType: "note", entityId: "note_1", serverRevision: 5 }]),
+    ).rejects.toThrow("pending change failed");
+
+    expect(useNotesStore.getState().notes).toEqual([note1]);
+    await expect(db.notes.get("note_1")).resolves.toEqual(note1);
+    await expect(db.notes.toArray()).resolves.toEqual([note1]);
+    await expect(db.pendingChanges.toArray()).resolves.toEqual([]);
   });
 });

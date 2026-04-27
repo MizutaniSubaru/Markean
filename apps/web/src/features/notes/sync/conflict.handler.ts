@@ -11,9 +11,13 @@ type Conflict = {
 
 export async function handleConflicts(conflicts: Conflict[]): Promise<void> {
   const db = getDb();
+  const processedNoteIds = new Set<string>();
 
   for (const conflict of conflicts) {
     if (conflict.entityType !== "note") continue;
+    if (processedNoteIds.has(conflict.entityId)) continue;
+
+    processedNoteIds.add(conflict.entityId);
 
     const localNote = await db.notes.get(conflict.entityId);
     if (!localNote) continue;
@@ -24,6 +28,7 @@ export async function handleConflicts(conflicts: Conflict[]): Promise<void> {
       title: `${localNote.title} (conflict copy)`,
       currentRevision: 0,
       updatedAt: new Date().toISOString(),
+      deletedAt: null,
     };
 
     await createNote(copy);
