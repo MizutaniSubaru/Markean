@@ -649,12 +649,18 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       const folderIdsReferencedByPreservedPendingNotes = new Set<string>();
       const localNotesInTransaction = await db.notes.toArray();
       for (const note of localNotesInTransaction) {
-        if (note.deletedAt || serverNoteIds.has(note.id)) continue;
+        if (serverNoteIds.has(note.id)) continue;
 
         const pendingChanges = await db.pendingChanges.where("entityId").equals(note.id).toArray();
         const notePendingChanges = pendingChanges.filter(
           (change) => change.entityType === "note",
         );
+        if (note.deletedAt) {
+          if (notePendingChanges.some((change) => change.operation === "delete")) {
+            skippedPendingBootstrapConflict = true;
+          }
+          continue;
+        }
         if (notePendingChanges.length > 0) {
           folderIdsReferencedByPreservedPendingNotes.add(note.folderId);
           if (notePendingChanges.some((change) => change.operation !== "create")) {
@@ -670,7 +676,7 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
 
       const localFoldersInTransaction = await db.folders.toArray();
       for (const folder of localFoldersInTransaction) {
-        if (folder.deletedAt || serverFolderIds.has(folder.id)) continue;
+        if (serverFolderIds.has(folder.id)) continue;
         if (serverReferencedFolderIds.has(folder.id)) continue;
         if (folderIdsReferencedByPreservedPendingNotes.has(folder.id)) continue;
 
@@ -678,6 +684,16 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
           .where("entityId")
           .equals(folder.id)
           .toArray();
+        if (folder.deletedAt) {
+          if (
+            pendingChanges.some(
+              (change) => change.entityType === "folder" && change.operation === "delete",
+            )
+          ) {
+            skippedPendingBootstrapConflict = true;
+          }
+          continue;
+        }
         if (
           pendingChanges.some(
             (change) => change.entityType === "folder" && change.operation !== "create",

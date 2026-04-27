@@ -2633,6 +2633,82 @@ describe("bootstrapApp", () => {
     });
   });
 
+  it("does not advance cursor for already deleted local records with pending deletes absent from remote snapshot", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const deletedAt = "2026-04-21T10:00:00.000Z";
+    const localFolder: FolderRecord = {
+      id: "deleted-folder",
+      name: "Deleted folder",
+      sortOrder: 0,
+      currentRevision: 3,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt,
+    };
+    const localNote: NoteRecord = {
+      id: "deleted-note",
+      folderId: localFolder.id,
+      title: "Deleted note",
+      bodyMd: "# Deleted",
+      bodyPlain: "Deleted",
+      currentRevision: 4,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.notes.put(localNote);
+    await localDb.syncState.put({ key: "syncCursor", value: "3" });
+    await queueChange(localDb, {
+      entityType: "folder",
+      entityId: localFolder.id,
+      operation: "delete",
+      baseRevision: localFolder.currentRevision,
+    });
+    await queueChange(localDb, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "delete",
+      baseRevision: localNote.currentRevision,
+    });
+    localDb.close();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+    await expect(db.notes.get(localNote.id)).resolves.toEqual(localNote);
+    const pendingChanges = await db.pendingChanges.toArray();
+    expect(pendingChanges).toHaveLength(2);
+    expect(pendingChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityType: "folder",
+          entityId: localFolder.id,
+          operation: "delete",
+        }),
+        expect.objectContaining({
+          entityType: "note",
+          entityId: localNote.id,
+          operation: "delete",
+        }),
+      ]),
+    );
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "3",
+    });
+  });
+
   it("merges remote records when same ID pending changes are for a different entity type", async () => {
     installStorageMock();
     const localDb = createWebDatabase("markean");
