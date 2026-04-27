@@ -568,6 +568,9 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
   const localScheduler = createSyncScheduler(syncService.executeSyncCycle);
 
   try {
+    const bootstrapRequestStartCursor = parseStoredSyncCursor(
+      (await db.syncState.get("syncCursor"))?.value,
+    );
     const bootstrap = await apiClient.bootstrap();
     if (isStale()) {
       localScheduler.stop();
@@ -591,7 +594,15 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       let skippedPendingBootstrapConflict = false;
       const currentSyncCursorRecord = await db.syncState.get("syncCursor");
       const currentSyncCursor = parseStoredSyncCursor(currentSyncCursorRecord?.value);
-      if (currentSyncCursor > bootstrap.syncCursor) return;
+      if (
+        currentSyncCursor > bootstrap.syncCursor ||
+        (
+          currentSyncCursor !== bootstrapRequestStartCursor &&
+          currentSyncCursor >= bootstrap.syncCursor
+        )
+      ) {
+        return;
+      }
       if (
         !hasValidRemoteNoteParents(
           serverNotes,

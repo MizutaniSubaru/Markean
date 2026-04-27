@@ -2349,6 +2349,88 @@ describe("bootstrapApp", () => {
     expect(useNotesStore.getState().notes).toEqual([acceptedNote]);
   });
 
+  it("skips stale remote snapshot when local sync cursor advances to bootstrap cursor during request", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "equal-cursor-folder",
+      name: "Equal cursor folder",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const localNote: NoteRecord = {
+      id: "equal-cursor-note",
+      folderId: localFolder.id,
+      title: "Equal cursor note",
+      bodyMd: "# Equal",
+      bodyPlain: "Equal",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const acceptedFolder: FolderRecord = {
+      ...localFolder,
+      currentRevision: 2,
+      updatedAt: "2026-04-21T10:00:00.000Z",
+    };
+    const acceptedNote: NoteRecord = {
+      ...localNote,
+      currentRevision: 2,
+      updatedAt: "2026-04-21T10:00:00.000Z",
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.notes.put(localNote);
+    await localDb.syncState.put({ key: "syncCursor", value: "3" });
+    await queueChange(localDb, {
+      entityType: "folder",
+      entityId: localFolder.id,
+      operation: "create",
+      baseRevision: 0,
+    });
+    await queueChange(localDb, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "create",
+      baseRevision: 0,
+    });
+    localDb.close();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [],
+          syncCursor: 42,
+        }),
+      }),
+    );
+    setBootstrapConcurrencyHooksForTests({
+      beforeRemoteWrite: async () => {
+        const db = getDb();
+        await db.pendingChanges.where("entityId").equals(localFolder.id).delete();
+        await db.pendingChanges.where("entityId").equals(localNote.id).delete();
+        await db.folders.put(acceptedFolder);
+        await db.notes.put(acceptedNote);
+        await db.syncState.put({ key: "syncCursor", value: "42" });
+      },
+    });
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(acceptedFolder);
+    await expect(db.notes.get(localNote.id)).resolves.toEqual(acceptedNote);
+    await expect(db.pendingChanges.toArray()).resolves.toEqual([]);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "42",
+    });
+    expect(useFoldersStore.getState().folders).toEqual([acceptedFolder]);
+    expect(useNotesStore.getState().notes).toEqual([acceptedNote]);
+  });
+
   it("does not overwrite local records with pending changes during remote bootstrap", async () => {
     installStorageMock();
     const localDb = createWebDatabase("markean");

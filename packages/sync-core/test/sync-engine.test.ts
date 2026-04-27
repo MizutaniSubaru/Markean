@@ -501,6 +501,58 @@ describe("sync engine queue", () => {
     await expect(db.syncState.get("syncCursor")).resolves.toBeUndefined();
   });
 
+  it("does not apply stale pulled events or regress cursor when local cursor advances during pull", async () => {
+    const db = createWebDatabase(`test-markean-pull-cursor-race-${crypto.randomUUID()}`);
+    const localFolder: FolderRecord = {
+      id: "folder_race",
+      name: "Current",
+      sortOrder: 0,
+      currentRevision: 50,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const staleFolder: FolderRecord = {
+      ...localFolder,
+      name: "Stale",
+      currentRevision: 4,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+    };
+    await db.folders.put(localFolder);
+    await db.syncState.put({ key: "syncCursor", value: "3" });
+
+    const apiClient = {
+      async syncPush() {
+        throw new Error("syncPush should not be called");
+      },
+      async syncPull(cursor: number) {
+        expect(cursor).toBe(3);
+        await db.syncState.put({ key: "syncCursor", value: "50" });
+        return {
+          nextCursor: 10,
+          events: [
+            {
+              cursor: 4,
+              entityType: "folder",
+              entityId: staleFolder.id,
+              operation: "update",
+              revisionNumber: staleFolder.currentRevision,
+              sourceDeviceId: "server_device",
+              entity: staleFolder,
+            },
+          ],
+        };
+      },
+    };
+
+    await pullChanges(db, apiClient, "device_1");
+
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "50",
+    });
+  });
+
   it("rolls back pulled notes when shouldApply becomes false during note put", async () => {
     const db = createWebDatabase(`test-markean-pull-inflight-cancel-${crypto.randomUUID()}`);
     const pulledNote: NoteRecord = {

@@ -76,6 +76,12 @@ function assertShouldApply(options: SyncApplyOptions): void {
   }
 }
 
+function parseStoredCursor(value: string | undefined): number {
+  if (!value) return 0;
+  const cursor = Number(value);
+  return Number.isFinite(cursor) ? cursor : 0;
+}
+
 function hasTransaction(
   db: SyncableDatabase,
 ): db is SyncableDatabase & { transaction: (...args: unknown[]) => Promise<unknown> } {
@@ -145,11 +151,8 @@ async function applyAcceptedPushChanges(
     const latestCursor = accepted.at(-1)?.cursor;
     if (latestCursor !== undefined) {
       const currentCursorRecord = await db.syncState.get("syncCursor");
-      const currentCursor = currentCursorRecord ? Number(currentCursorRecord.value) : 0;
-      const nextCursor = Math.max(
-        Number.isFinite(currentCursor) ? currentCursor : 0,
-        latestCursor,
-      );
+      const currentCursor = parseStoredCursor(currentCursorRecord?.value);
+      const nextCursor = Math.max(currentCursor, latestCursor);
       await db.syncState.put({ key: "syncCursor", value: String(nextCursor) });
     }
   });
@@ -221,13 +224,16 @@ export async function pullChanges(
   options: SyncApplyOptions = {},
 ): Promise<void> {
   const cursorRecord = await db.syncState.get("syncCursor");
-  const cursor = cursorRecord ? Number(cursorRecord.value) : 0;
+  const cursor = parseStoredCursor(cursorRecord?.value);
 
   const result = await apiClient.syncPull(cursor);
   if (!shouldApply(options)) return;
 
   await applyLocalSyncChanges(db, options, async () => {
+    const currentCursorRecord = await db.syncState.get("syncCursor");
+    const currentCursor = parseStoredCursor(currentCursorRecord?.value);
     for (const event of result.events) {
+      if (event.cursor <= currentCursor) continue;
       if (event.sourceDeviceId === deviceId) continue;
       assertShouldApply(options);
 
@@ -271,7 +277,10 @@ export async function pullChanges(
     }
 
     assertShouldApply(options);
-    await db.syncState.put({ key: "syncCursor", value: String(result.nextCursor) });
+    await db.syncState.put({
+      key: "syncCursor",
+      value: String(Math.max(currentCursor, result.nextCursor)),
+    });
     assertShouldApply(options);
   });
 }
