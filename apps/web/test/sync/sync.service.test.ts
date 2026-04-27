@@ -176,6 +176,55 @@ describe("sync.service", () => {
     expect(useFoldersStore.getState().folders).toEqual([pulledFolder]);
   });
 
+  it("skips stale store and status updates when sync becomes inactive before pull resolves", async () => {
+    const pullResult = createDeferred<{
+      nextCursor: number;
+      events: Array<{
+        cursor: number;
+        entityType: "note";
+        entityId: string;
+        operation: "create";
+        revisionNumber: number;
+        sourceDeviceId: string;
+        entity: NoteRecord;
+      }>;
+    }>();
+    let active = true;
+    const apiClient = createMockApiClient();
+    apiClient.syncPull.mockReturnValue(pullResult.promise);
+    const service = createSyncService(apiClient, {
+      shouldApply: () => active,
+    });
+
+    const cycle = service.executeSyncCycle();
+    await vi.waitFor(() => expect(apiClient.syncPull).toHaveBeenCalledTimes(1));
+    expect(useSyncStore.getState().status).toBe("syncing");
+
+    active = false;
+    pullResult.resolve({
+      nextCursor: 2,
+      events: [
+        {
+          cursor: 2,
+          entityType: "note",
+          entityId: pulledNote.id,
+          operation: "create",
+          revisionNumber: pulledNote.currentRevision,
+          sourceDeviceId: "server_device",
+          entity: pulledNote,
+        },
+      ],
+    });
+    await cycle;
+
+    expect(useNotesStore.getState().notes).toEqual([]);
+    expect(useFoldersStore.getState().folders).toEqual([]);
+    expect(useSyncStore.getState()).toMatchObject({
+      status: "syncing",
+      lastSyncedAt: null,
+    });
+  });
+
   it("creates a conflict copy when sync returns a note conflict", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));

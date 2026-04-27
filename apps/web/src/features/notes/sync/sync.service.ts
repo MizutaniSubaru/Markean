@@ -9,35 +9,52 @@ import { handleConflicts } from "./conflict.handler";
 
 type ApiClient = Parameters<typeof pushChanges>[1];
 
-export function createSyncService(apiClient: ApiClient) {
+type SyncServiceOptions = {
+  shouldApply?: () => boolean;
+};
+
+export function createSyncService(apiClient: ApiClient, options: SyncServiceOptions = {}) {
   let inFlight: Promise<void> | null = null;
+  const shouldApply = options.shouldApply ?? (() => true);
 
   async function runCycle(): Promise<void> {
+    if (!shouldApply()) return;
     useSyncStore.getState().markSyncing();
 
     try {
       const db = getDb();
       const deviceId = await getDeviceId(db);
+      if (!shouldApply()) return;
+
       const { conflicts } = await pushChanges(db, apiClient, deviceId);
+      if (!shouldApply()) return;
 
       if (conflicts.length > 0) {
         await handleConflicts(conflicts);
+        if (!shouldApply()) return;
       }
 
       await pullChanges(db, apiClient, deviceId);
+      if (!shouldApply()) return;
 
       const [notes, folders] = await Promise.all([getAllNotes(), getAllFolders()]);
+      if (!shouldApply()) return;
+
       useNotesStore.getState().loadNotes(notes);
       useFoldersStore.getState().loadFolders(folders);
 
       const pendingChanges = await db.pendingChanges.toArray();
+      if (!shouldApply()) return;
+
       if (pendingChanges.length === 0) {
         useSyncStore.getState().markSynced();
       } else {
         useSyncStore.getState().markUnsynced();
       }
     } catch {
-      useSyncStore.getState().markError();
+      if (shouldApply()) {
+        useSyncStore.getState().markError();
+      }
     }
   }
 

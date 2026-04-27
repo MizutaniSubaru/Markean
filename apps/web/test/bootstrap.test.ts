@@ -1500,6 +1500,60 @@ describe("bootstrapApp", () => {
     });
   });
 
+  it("rejects a remote note when its local parent is deleted before remote merge", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "race-folder",
+      name: "Race folder",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.syncState.put({ key: "syncCursor", value: "37" });
+    localDb.close();
+    const remoteNote: NoteRecord = {
+      id: "remote-note",
+      folderId: localFolder.id,
+      title: "Remote note",
+      bodyMd: "# Remote",
+      bodyPlain: "Remote",
+      currentRevision: 4,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const deletedFolder = {
+      ...localFolder,
+      deletedAt: "2026-04-22T11:00:00.000Z",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockImplementation(async () => {
+          await getDb().folders.put(deletedFolder);
+          return {
+            folders: [],
+            notes: [remoteNote],
+            syncCursor: 42,
+          };
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(deletedFolder);
+    await expect(db.notes.get(remoteNote.id)).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "37",
+    });
+    expect(getScheduler()).not.toBeNull();
+  });
+
   it("soft-deletes non-pending local records absent from valid remote active snapshot", async () => {
     installStorageMock();
     const localDb = createWebDatabase("markean");

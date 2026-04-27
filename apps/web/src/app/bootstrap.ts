@@ -77,6 +77,18 @@ function isValidBootstrapResponse(
   );
 }
 
+function hasValidRemoteNoteParents(
+  notes: NoteRecord[],
+  activeLocalFolderIds: Set<string>,
+  activeRemoteFolderIds: Set<string>,
+): boolean {
+  return notes.every(
+    (note) =>
+      activeLocalFolderIds.has(note.folderId) ||
+      activeRemoteFolderIds.has(note.folderId),
+  );
+}
+
 function isNonBlank(value: string): boolean {
   return value.trim().length > 0;
 }
@@ -492,7 +504,9 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
   const consumedMigratedSelection = selectionToRestore !== null;
   restoreEditorSelection(localNotes, localFolders, selectionToRestore);
 
-  const syncService = createSyncService(apiClient);
+  const syncService = createSyncService(apiClient, {
+    shouldApply: () => !isStale(),
+  });
   const localScheduler = createSyncScheduler(syncService.executeSyncCycle);
 
   try {
@@ -522,6 +536,20 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       await concurrencyHooks.beforeRemoteWrite?.();
       if (isStale()) throw new StaleBootstrapError();
       let skippedPendingBootstrapConflict = false;
+      const activeLocalFolderIdsInTransaction = new Set(
+        (await db.folders.toArray())
+          .filter((folder) => !folder.deletedAt)
+          .map((folder) => folder.id),
+      );
+      if (
+        !hasValidRemoteNoteParents(
+          serverNotes,
+          activeLocalFolderIdsInTransaction,
+          serverFolderIds,
+        )
+      ) {
+        throw new Error("Invalid bootstrap response");
+      }
 
       for (const note of serverNotes) {
         const pendingChanges = await db.pendingChanges.where("entityId").equals(note.id).toArray();
