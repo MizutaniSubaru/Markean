@@ -46,6 +46,25 @@ describe("sync engine queue", () => {
     await expect(db.syncState.get("deviceId")).resolves.toBeUndefined();
   });
 
+  it("removes a generated device id when shouldApply becomes false while persisting it", async () => {
+    const db = createWebDatabase(`test-markean-device-id-inflight-cancel-${crypto.randomUUID()}`);
+    const originalPut = db.syncState.put.bind(db.syncState);
+    let active = true;
+
+    db.syncState.put = (async (value) => {
+      const result = await originalPut(value);
+      if (value.key === "deviceId") {
+        active = false;
+      }
+      return result;
+    }) as typeof db.syncState.put;
+
+    const deviceId = await getDeviceId(db, { shouldApply: () => active });
+
+    expect(deviceId).toBeNull();
+    await expect(db.syncState.get("deviceId")).resolves.toBeUndefined();
+  });
+
   it("reconciles the originating device with accepted server state after push", async () => {
     const db = createWebDatabase(`test-markean-push-reconcile-${crypto.randomUUID()}`);
 

@@ -92,6 +92,10 @@ function isNonNegativeInteger(value: number): boolean {
   return Number.isInteger(value) && value >= 0;
 }
 
+function isValidDateString(value: string): boolean {
+  return Number.isFinite(Date.parse(value));
+}
+
 function hasUniqueIds(records: Array<{ id: string }>): boolean {
   return new Set(records.map((record) => record.id)).size === records.length;
 }
@@ -108,6 +112,7 @@ function isRemoteFolderRecord(value: unknown): value is FolderRecord {
     typeof folder.currentRevision === "number" &&
     isNonNegativeInteger(folder.currentRevision) &&
     typeof folder.updatedAt === "string" &&
+    isValidDateString(folder.updatedAt) &&
     folder.deletedAt === null
   );
 }
@@ -126,6 +131,7 @@ function isRemoteNoteRecord(value: unknown): value is NoteRecord {
     typeof note.currentRevision === "number" &&
     isNonNegativeInteger(note.currentRevision) &&
     typeof note.updatedAt === "string" &&
+    isValidDateString(note.updatedAt) &&
     note.deletedAt === null
   );
 }
@@ -150,7 +156,10 @@ function isLegacyNote(value: unknown): value is LegacyWorkspace["notes"][number]
     isNonBlank(note.folderId) &&
     typeof note.title === "string" &&
     typeof note.body === "string" &&
-    (!("updatedAt" in note) || typeof note.updatedAt === "string")
+    (
+      !("updatedAt" in note) ||
+      (typeof note.updatedAt === "string" && isValidDateString(note.updatedAt))
+    )
   );
 }
 

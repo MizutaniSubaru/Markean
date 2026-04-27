@@ -187,6 +187,37 @@ describe("migrateFromLocalStorage", () => {
     expect(storage.removeItem).toHaveBeenCalledWith("markean:workspace");
   });
 
+  it("leaves legacy notes with invalid updatedAt untouched", async () => {
+    const { storage, store } = installStorageMock();
+    store.set(
+      "markean:workspace",
+      JSON.stringify({
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [
+          {
+            id: "note_1",
+            folderId: "notes",
+            title: "Hello",
+            body: "# Hello",
+            updatedAt: "not-a-date",
+          },
+        ],
+        activeFolderId: "notes",
+        activeNoteId: "note_1",
+      }),
+    );
+    store.set("markean:draft:note_1", "# Draft");
+
+    await migrateFromLocalStorage();
+
+    expect(await db.notes.toArray()).toEqual([]);
+    expect(await db.folders.toArray()).toEqual([]);
+    expect(await db.pendingChanges.toArray()).toEqual([]);
+    expect(store.get("markean:workspace")).toBeTruthy();
+    expect(store.get("markean:draft:note_1")).toBe("# Draft");
+    expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+
   it("skips migration when IndexedDB already has data", async () => {
     const { store } = installStorageMock();
     store.set(
@@ -1253,6 +1284,79 @@ describe("bootstrapApp", () => {
     });
     expect(getScheduler()).not.toBeNull();
   });
+
+  const invalidDateBootstrapCases: Array<[
+    string,
+    {
+      folder?: Partial<FolderRecord>;
+      note?: Partial<NoteRecord>;
+    },
+  ]> = [
+    ["folder", { folder: { updatedAt: "not-a-date" } }],
+    ["note", { note: { updatedAt: "not-a-date" } }],
+  ];
+
+  it.each(invalidDateBootstrapCases)(
+    "rejects remote bootstrap with invalid %s updatedAt",
+    async (_entityType, override) => {
+      installStorageMock();
+      const localDb = createWebDatabase("markean");
+      const localFolder: FolderRecord = {
+        id: "local-folder",
+        name: "Local",
+        sortOrder: 0,
+        currentRevision: 1,
+        updatedAt: "2026-04-21T09:00:00.000Z",
+        deletedAt: null,
+      };
+      await localDb.folders.put(localFolder);
+      await localDb.syncState.put({ key: "syncCursor", value: "37" });
+      localDb.close();
+
+      const remoteFolder: FolderRecord = {
+        id: "remote-folder",
+        name: "Remote",
+        sortOrder: 1,
+        currentRevision: 2,
+        updatedAt: "2026-04-23T10:00:00.000Z",
+        deletedAt: null,
+        ...override.folder,
+      };
+      const remoteNote: NoteRecord = {
+        id: "remote-note",
+        folderId: remoteFolder.id,
+        title: "Remote note",
+        bodyMd: "# Remote",
+        bodyPlain: "Remote",
+        currentRevision: 2,
+        updatedAt: "2026-04-23T10:00:00.000Z",
+        deletedAt: null,
+        ...override.note,
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          json: vi.fn().mockResolvedValue({
+            folders: [remoteFolder],
+            notes: [remoteNote],
+            syncCursor: 42,
+          }),
+        }),
+      );
+
+      await bootstrapApp("https://example.test");
+
+      const db = getDb();
+      await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+      await expect(db.folders.get(remoteFolder.id)).resolves.toBeUndefined();
+      await expect(db.notes.get(remoteNote.id)).resolves.toBeUndefined();
+      await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+        key: "syncCursor",
+        value: "37",
+      });
+      expect(getScheduler()).not.toBeNull();
+    },
+  );
 
   it("rejects duplicate remote folder IDs", async () => {
     installStorageMock();

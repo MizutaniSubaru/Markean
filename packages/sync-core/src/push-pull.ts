@@ -22,6 +22,7 @@ type SyncableDatabase = {
   syncState: {
     get(key: string): Promise<{ key: string; value: string } | undefined>;
     put(value: { key: string; value: string }): Promise<unknown>;
+    delete(key: string): Promise<unknown>;
   };
 };
 
@@ -211,6 +212,13 @@ export async function getDeviceId(
   const deviceId = `dev_${crypto.randomUUID()}`;
   if (!shouldApply(options)) return null;
   await db.syncState.put({ key: "deviceId", value: deviceId });
+  if (!shouldApply(options)) {
+    const stored = await db.syncState.get("deviceId");
+    if (stored?.value === deviceId) {
+      await db.syncState.delete("deviceId");
+    }
+    return null;
+  }
   return deviceId;
 }
 
