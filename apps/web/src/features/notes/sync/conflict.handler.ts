@@ -1,6 +1,6 @@
 import type { NoteRecord } from "@markean/domain";
+import { queueChange } from "@markean/sync-core";
 import { getDb } from "../persistence/db";
-import { createNote } from "../persistence/notes.persistence";
 import { useNotesStore } from "../store/notes.store";
 
 type Conflict = {
@@ -28,18 +28,6 @@ export async function handleConflicts(conflicts: Conflict[]): Promise<void> {
       .filter((change) => change.entityType === "note")
       .toArray();
     const copyTitle = `${localNote.title} (conflict copy)`;
-    const existingCopy = await db.notes
-      .filter(
-        (note) =>
-          note.id !== localNote.id &&
-          note.folderId === localNote.folderId &&
-          note.title === copyTitle &&
-          note.bodyMd === localNote.bodyMd &&
-          note.bodyPlain === localNote.bodyPlain &&
-          note.currentRevision === 0,
-      )
-      .first();
-    if (originalChanges.length === 0 && existingCopy) continue;
 
     const copy: NoteRecord = {
       ...localNote,
@@ -50,11 +38,21 @@ export async function handleConflicts(conflicts: Conflict[]): Promise<void> {
       deletedAt: null,
     };
 
-    await createNote(copy);
-    await db.pendingChanges
-      .where("clientChangeId")
-      .anyOf(originalChanges.map((change) => change.clientChangeId))
-      .delete();
+    await db.transaction("rw", db.notes, db.pendingChanges, async () => {
+      await db.notes.put(copy);
+      await queueChange(db, {
+        entityType: "note",
+        entityId: copy.id,
+        operation: "create",
+        baseRevision: 0,
+      });
+      if (originalChanges.length > 0) {
+        await db.pendingChanges
+          .where("clientChangeId")
+          .anyOf(originalChanges.map((change) => change.clientChangeId))
+          .delete();
+      }
+    });
     useNotesStore.getState().addConflictCopy(copy);
   }
 }

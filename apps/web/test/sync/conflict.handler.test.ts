@@ -205,14 +205,11 @@ describe("conflict.handler", () => {
     });
   });
 
-  it("does not create another copy on a later retry after resolving the original pending change", async () => {
+  it("removes the original pending change so the next sync will not retry it", async () => {
     await db.notes.put(note1);
     useNotesStore.getState().loadNotes([note1]);
     await seedPendingNoteChange("note_1");
 
-    await handleConflicts([
-      { entityType: "note", entityId: "note_1", serverRevision: 5 },
-    ]);
     await handleConflicts([
       { entityType: "note", entityId: "note_1", serverRevision: 5 },
     ]);
@@ -225,6 +222,7 @@ describe("conflict.handler", () => {
     const changes = await db.pendingChanges.toArray();
     expect(changes).toHaveLength(1);
     expect(changes[0].entityId).toBe(copies[0].id);
+    expect(changes.some((change) => change.entityId === "note_1")).toBe(false);
   });
 
   it("does not update the store or leave a copy when creating the copy fails", async () => {
@@ -241,6 +239,33 @@ describe("conflict.handler", () => {
 
     expect(useNotesStore.getState().notes).toEqual([note1]);
     await expect(db.notes.get("note_1")).resolves.toEqual(note1);
+    await expect(db.notes.toArray()).resolves.toEqual([note1]);
+    await expect(db.pendingChanges.toArray()).resolves.toEqual([
+      {
+        clientChangeId: "chg_original_note_1",
+        entityType: "note",
+        entityId: "note_1",
+        operation: "update",
+        baseRevision: 1,
+      },
+    ]);
+  });
+
+  it("rolls back the conflict copy when original pending cleanup fails", async () => {
+    await db.notes.put(note1);
+    useNotesStore.getState().loadNotes([note1]);
+    await seedPendingNoteChange("note_1");
+    db.pendingChanges.hook("deleting", (clientChangeId) => {
+      if (clientChangeId === "chg_original_note_1") {
+        throw new Error("cleanup failed");
+      }
+    });
+
+    await expect(
+      handleConflicts([{ entityType: "note", entityId: "note_1", serverRevision: 5 }]),
+    ).rejects.toThrow("cleanup failed");
+
+    expect(useNotesStore.getState().notes).toEqual([note1]);
     await expect(db.notes.toArray()).resolves.toEqual([note1]);
     await expect(db.pendingChanges.toArray()).resolves.toEqual([
       {
