@@ -258,6 +258,102 @@ describe("migrateFromLocalStorage", () => {
     expect(storage.removeItem).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      "dangling active folder",
+      {
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [],
+        activeFolderId: "missing",
+        activeNoteId: "",
+      },
+    ],
+    [
+      "dangling active note",
+      {
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [],
+        activeFolderId: "notes",
+        activeNoteId: "missing",
+      },
+    ],
+    [
+      "note folder missing",
+      {
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [
+          {
+            id: "note_1",
+            folderId: "missing",
+            title: "Hello",
+            body: "# Hello",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+        ],
+        activeFolderId: "notes",
+        activeNoteId: "note_1",
+      },
+    ],
+    [
+      "active note outside active folder",
+      {
+        folders: [
+          { id: "notes", name: "Notes" },
+          { id: "archive", name: "Archive" },
+        ],
+        notes: [
+          {
+            id: "note_1",
+            folderId: "archive",
+            title: "Hello",
+            body: "# Hello",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+        ],
+        activeFolderId: "notes",
+        activeNoteId: "note_1",
+      },
+    ],
+  ])("leaves workspace with dangling references untouched: %s", async (_name, payload) => {
+    const { storage, store } = installStorageMock();
+    store.set("markean:workspace", JSON.stringify(payload));
+
+    await migrateFromLocalStorage();
+
+    expect(await db.notes.toArray()).toEqual([]);
+    expect(await db.folders.toArray()).toEqual([]);
+    expect(await db.pendingChanges.toArray()).toEqual([]);
+    expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+
+  it("allows empty active ids when records otherwise reference existing folders", async () => {
+    const { storage, store } = installStorageMock();
+    store.set(
+      "markean:workspace",
+      JSON.stringify({
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [
+          {
+            id: "note_1",
+            folderId: "notes",
+            title: "Hello",
+            body: "# Hello",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+        ],
+        activeFolderId: "",
+        activeNoteId: "",
+      }),
+    );
+
+    await migrateFromLocalStorage();
+
+    expect(await db.folders.toArray()).toHaveLength(1);
+    expect(await db.notes.toArray()).toHaveLength(1);
+    expect(await db.pendingChanges.toArray()).toHaveLength(2);
+    expect(storage.removeItem).toHaveBeenCalledWith("markean:workspace");
+  });
+
   it("skips migration when localStorage is unavailable", async () => {
     Object.defineProperty(window, "localStorage", {
       configurable: true,

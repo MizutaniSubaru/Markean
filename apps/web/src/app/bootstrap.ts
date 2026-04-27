@@ -49,6 +49,29 @@ function isLegacyNote(value: unknown): value is LegacyWorkspace["notes"][number]
   );
 }
 
+function hasValidLegacyReferences(workspace: LegacyWorkspace): boolean {
+  const folderIds = new Set(workspace.folders.map((folder) => folder.id));
+  const notesById = new Map(workspace.notes.map((note) => [note.id, note]));
+
+  if (workspace.activeFolderId !== "" && !folderIds.has(workspace.activeFolderId)) {
+    return false;
+  }
+
+  if (workspace.activeNoteId !== "" && !notesById.has(workspace.activeNoteId)) {
+    return false;
+  }
+
+  if (workspace.notes.some((note) => !folderIds.has(note.folderId))) {
+    return false;
+  }
+
+  if (workspace.activeFolderId !== "" && workspace.activeNoteId !== "") {
+    return notesById.get(workspace.activeNoteId)?.folderId === workspace.activeFolderId;
+  }
+
+  return true;
+}
+
 function getLocalStorage(): Storage | null {
   if (typeof window === "undefined") return null;
   try {
@@ -122,6 +145,7 @@ export async function migrateFromLocalStorage(): Promise<void> {
   if (typeof workspace.activeNoteId !== "string") return;
   if (!workspace.folders.every(isLegacyFolder)) return;
   if (!workspace.notes.every(isLegacyNote)) return;
+  if (!hasValidLegacyReferences(workspace)) return;
 
   const now = new Date().toISOString();
   const folders: FolderRecord[] = workspace.folders.map((folder, index) => ({
