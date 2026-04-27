@@ -80,6 +80,27 @@ function removeLocalStorage(key: string): void {
   }
 }
 
+function removeLegacyDrafts(): void {
+  const storage = getLocalStorage();
+  if (!storage) return;
+
+  try {
+    const draftKeys: string[] = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key?.startsWith(DRAFT_PREFIX)) {
+        draftKeys.push(key);
+      }
+    }
+
+    for (const key of draftKeys) {
+      storage.removeItem(key);
+    }
+  } catch {
+    // Storage enumeration/removal can fail in restricted browser contexts.
+  }
+}
+
 export async function migrateFromLocalStorage(): Promise<void> {
   const db = getDb();
   const existingCount = (await db.notes.count()) + (await db.folders.count());
@@ -97,6 +118,8 @@ export async function migrateFromLocalStorage(): Promise<void> {
 
   if (!workspace || typeof workspace !== "object") return;
   if (!Array.isArray(workspace.folders) || !Array.isArray(workspace.notes)) return;
+  if (typeof workspace.activeFolderId !== "string") return;
+  if (typeof workspace.activeNoteId !== "string") return;
   if (!workspace.folders.every(isLegacyFolder)) return;
   if (!workspace.notes.every(isLegacyNote)) return;
 
@@ -147,9 +170,7 @@ export async function migrateFromLocalStorage(): Promise<void> {
   });
 
   removeLocalStorage(WORKSPACE_KEY);
-  for (const note of workspace.notes) {
-    removeLocalStorage(`${DRAFT_PREFIX}${note.id}`);
-  }
+  removeLegacyDrafts();
   removeLocalStorage(SYNC_STATUS_KEY);
 }
 

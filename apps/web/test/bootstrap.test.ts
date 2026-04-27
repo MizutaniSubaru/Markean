@@ -36,7 +36,7 @@ function installStorageMock() {
     get length() {
       return store.size;
     },
-    key: vi.fn(() => null),
+    key: vi.fn((index: number) => Array.from(store.keys())[index] ?? null),
   };
   Object.defineProperty(window, "localStorage", { configurable: true, value: storage });
   return { storage, store };
@@ -96,6 +96,7 @@ describe("migrateFromLocalStorage", () => {
       }),
     );
     store.set("markean:draft:note_1", "# Hello\n\nWorld (draft)");
+    store.set("markean:draft:orphan", "Orphan draft");
     store.set("markean:sync-status", "unsynced");
 
     await migrateFromLocalStorage();
@@ -132,7 +133,9 @@ describe("migrateFromLocalStorage", () => {
 
     expect(storage.removeItem).toHaveBeenCalledWith("markean:workspace");
     expect(storage.removeItem).toHaveBeenCalledWith("markean:draft:note_1");
+    expect(storage.removeItem).toHaveBeenCalledWith("markean:draft:orphan");
     expect(storage.removeItem).toHaveBeenCalledWith("markean:sync-status");
+    expect(Array.from(store.keys()).some((key) => key.startsWith("markean:draft:"))).toBe(false);
   });
 
   it("skips migration when IndexedDB already has data", async () => {
@@ -187,6 +190,23 @@ describe("migrateFromLocalStorage", () => {
   it.each([
     ["null", null],
     ["wrong shape", { folders: {}, notes: [] }],
+    [
+      "missing active folder",
+      {
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [],
+        activeNoteId: "",
+      },
+    ],
+    [
+      "mistyped active note",
+      {
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [],
+        activeFolderId: "notes",
+        activeNoteId: null,
+      },
+    ],
   ])("leaves valid JSON with invalid workspace shape untouched: %s", async (_name, payload) => {
     const { storage, store } = installStorageMock();
     store.set("markean:workspace", JSON.stringify(payload));
@@ -195,6 +215,7 @@ describe("migrateFromLocalStorage", () => {
 
     expect(await db.notes.toArray()).toEqual([]);
     expect(await db.folders.toArray()).toEqual([]);
+    expect(await db.pendingChanges.toArray()).toEqual([]);
     expect(storage.removeItem).not.toHaveBeenCalled();
   });
 
