@@ -594,10 +594,15 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
 
       for (const note of serverNotes) {
         const pendingChanges = await db.pendingChanges.where("entityId").equals(note.id).toArray();
-        if (pendingChanges.some((change) => change.entityType === "note")) {
+        if (
+          pendingChanges.some(
+            (change) => change.entityType === "note" && change.operation !== "create",
+          )
+        ) {
           skippedPendingBootstrapConflict = true;
           continue;
         }
+        if (pendingChanges.some((change) => change.entityType === "note")) continue;
 
         const local = await db.notes.get(note.id);
         if (!local || (note.currentRevision ?? 0) > (local.currentRevision ?? 0)) {
@@ -612,10 +617,15 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
           .where("entityId")
           .equals(folder.id)
           .toArray();
-        if (pendingChanges.some((change) => change.entityType === "folder")) {
+        if (
+          pendingChanges.some(
+            (change) => change.entityType === "folder" && change.operation !== "create",
+          )
+        ) {
           skippedPendingBootstrapConflict = true;
           continue;
         }
+        if (pendingChanges.some((change) => change.entityType === "folder")) continue;
 
         const local = await db.folders.get(folder.id);
         if (!local || (folder.currentRevision ?? 0) > (local.currentRevision ?? 0)) {
@@ -631,6 +641,14 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
         if (note.deletedAt || serverNoteIds.has(note.id)) continue;
 
         const pendingChanges = await db.pendingChanges.where("entityId").equals(note.id).toArray();
+        if (
+          pendingChanges.some(
+            (change) => change.entityType === "note" && change.operation !== "create",
+          )
+        ) {
+          skippedPendingBootstrapConflict = true;
+          continue;
+        }
         if (pendingChanges.some((change) => change.entityType === "note")) continue;
 
         if (isStale()) throw new StaleBootstrapError();
@@ -647,6 +665,14 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
           .where("entityId")
           .equals(folder.id)
           .toArray();
+        if (
+          pendingChanges.some(
+            (change) => change.entityType === "folder" && change.operation !== "create",
+          )
+        ) {
+          skippedPendingBootstrapConflict = true;
+          continue;
+        }
         if (pendingChanges.some((change) => change.entityType === "folder")) continue;
 
         if (isStale()) throw new StaleBootstrapError();

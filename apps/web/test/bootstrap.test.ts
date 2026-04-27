@@ -2185,7 +2185,7 @@ describe("bootstrapApp", () => {
     await expect(db.notes.get(localNote.id)).resolves.toEqual(localNote);
     await expect(db.syncState.get("syncCursor")).resolves.toEqual({
       key: "syncCursor",
-      value: "42",
+      value: "3",
     });
     const pendingChanges = await db.pendingChanges.toArray();
     expect(pendingChanges).toHaveLength(2);
@@ -2203,7 +2203,7 @@ describe("bootstrapApp", () => {
     );
     await expect(db.syncState.get("syncCursor")).resolves.toEqual({
       key: "syncCursor",
-      value: "42",
+      value: "3",
     });
   });
 

@@ -116,6 +116,45 @@ async function applyLocalSyncChanges(
   }
 }
 
+async function applyAcceptedPushChanges(
+  db: SyncableDatabase,
+  acceptedChanges: PendingChange[],
+  accepted: Array<{ acceptedRevision: number; cursor: number }>,
+): Promise<void> {
+  await applyLocalSyncChanges(db, {}, async () => {
+    for (const [index, serverAccepted] of accepted.entries()) {
+      const change = acceptedChanges[index];
+      if (!change) continue;
+
+      if (change.entityType === "note") {
+        await db.notes.update(change.entityId, {
+          currentRevision: serverAccepted.acceptedRevision,
+        });
+      } else {
+        await db.folders.update(change.entityId, {
+          currentRevision: serverAccepted.acceptedRevision,
+        });
+      }
+    }
+
+    if (accepted.length > 0) {
+      const acceptedIds = acceptedChanges.map((change) => change.clientChangeId);
+      await db.pendingChanges.where("clientChangeId").anyOf(acceptedIds).delete();
+    }
+
+    const latestCursor = accepted.at(-1)?.cursor;
+    if (latestCursor !== undefined) {
+      const currentCursorRecord = await db.syncState.get("syncCursor");
+      const currentCursor = currentCursorRecord ? Number(currentCursorRecord.value) : 0;
+      const nextCursor = Math.max(
+        Number.isFinite(currentCursor) ? currentCursor : 0,
+        latestCursor,
+      );
+      await db.syncState.put({ key: "syncCursor", value: String(nextCursor) });
+    }
+  });
+}
+
 export function queueChange(
   db: SyncableDatabase,
   input: Omit<PendingChange, "clientChangeId">,
@@ -162,38 +201,9 @@ export async function pushChanges(
   }
 
   const result = await apiClient.syncPush({ deviceId, changes });
-  if (!shouldApply(options)) return { conflicts: result.conflicts ?? [] };
-
   const acceptedChanges = pending.slice(0, result.accepted.length);
 
-  await applyLocalSyncChanges(db, options, async () => {
-    for (const [index, accepted] of result.accepted.entries()) {
-      const change = acceptedChanges[index];
-      if (!change) continue;
-      assertShouldApply(options);
-
-      if (change.entityType === "note") {
-        await db.notes.update(change.entityId, { currentRevision: accepted.acceptedRevision });
-      } else {
-        await db.folders.update(change.entityId, { currentRevision: accepted.acceptedRevision });
-      }
-      assertShouldApply(options);
-    }
-
-    if (result.accepted.length > 0) {
-      assertShouldApply(options);
-      const acceptedIds = acceptedChanges.map((p) => p.clientChangeId);
-      await db.pendingChanges.where("clientChangeId").anyOf(acceptedIds).delete();
-      assertShouldApply(options);
-    }
-
-    const latestCursor = result.accepted.at(-1)?.cursor;
-    if (latestCursor !== undefined) {
-      assertShouldApply(options);
-      await db.syncState.put({ key: "syncCursor", value: String(latestCursor) });
-      assertShouldApply(options);
-    }
-  });
+  await applyAcceptedPushChanges(db, acceptedChanges, result.accepted);
 
   return { conflicts: result.conflicts ?? [] };
 }
