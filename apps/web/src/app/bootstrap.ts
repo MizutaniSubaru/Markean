@@ -105,6 +105,12 @@ function isValidDateString(value: string): boolean {
   return Number.isFinite(Date.parse(value));
 }
 
+function parseStoredSyncCursor(value: string | undefined): number {
+  if (!value) return 0;
+  const cursor = Number(value);
+  return isNonNegativeInteger(cursor) ? cursor : 0;
+}
+
 function hasUniqueIds(records: Array<{ id: string }>): boolean {
   return new Set(records.map((record) => record.id)).size === records.length;
 }
@@ -583,6 +589,9 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       await concurrencyHooks.beforeRemoteWrite?.();
       if (isStale()) throw new StaleBootstrapError();
       let skippedPendingBootstrapConflict = false;
+      const currentSyncCursorRecord = await db.syncState.get("syncCursor");
+      const currentSyncCursor = parseStoredSyncCursor(currentSyncCursorRecord?.value);
+      if (currentSyncCursor > bootstrap.syncCursor) return;
       if (
         !hasValidRemoteNoteParents(
           serverNotes,
@@ -687,7 +696,7 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       if (!skippedPendingBootstrapConflict) {
         await db.syncState.put({
           key: "syncCursor",
-          value: String(bootstrap.syncCursor),
+          value: String(Math.max(currentSyncCursor, bootstrap.syncCursor)),
         });
       }
       if (isStale()) throw new StaleBootstrapError();
