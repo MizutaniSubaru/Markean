@@ -470,12 +470,21 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       db.close();
       return;
     }
-    const existingFolderIds = new Set(localFolders.map((folder) => folder.id));
+    const existingFolderIds = new Set(
+      localFolders
+        .filter((folder) => !folder.deletedAt)
+        .map((folder) => folder.id),
+    );
     if (!isValidBootstrapResponse(bootstrap, existingFolderIds)) {
       throw new Error("Invalid bootstrap response");
     }
     const serverNotes = bootstrap.notes;
     const serverFolders = bootstrap.folders;
+    const serverNoteIds = new Set(serverNotes.map((note) => note.id));
+    const serverFolderIds = new Set(serverFolders.map((folder) => folder.id));
+    const serverReferencedFolderIds = new Set(
+      serverNotes.map((note) => note.folderId),
+    );
 
     await db.transaction("rw", db.notes, db.folders, db.pendingChanges, db.syncState, async () => {
       await concurrencyHooks.beforeRemoteWrite?.();
@@ -506,6 +515,35 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
           await db.folders.put(folder);
           if (isStale()) throw new StaleBootstrapError();
         }
+      }
+
+      const deletedAt = new Date().toISOString();
+      const localNotesInTransaction = await db.notes.toArray();
+      for (const note of localNotesInTransaction) {
+        if (note.deletedAt || serverNoteIds.has(note.id)) continue;
+
+        const pendingChanges = await db.pendingChanges.where("entityId").equals(note.id).toArray();
+        if (pendingChanges.some((change) => change.entityType === "note")) continue;
+
+        if (isStale()) throw new StaleBootstrapError();
+        await db.notes.put({ ...note, deletedAt });
+        if (isStale()) throw new StaleBootstrapError();
+      }
+
+      const localFoldersInTransaction = await db.folders.toArray();
+      for (const folder of localFoldersInTransaction) {
+        if (folder.deletedAt || serverFolderIds.has(folder.id)) continue;
+        if (serverReferencedFolderIds.has(folder.id)) continue;
+
+        const pendingChanges = await db.pendingChanges
+          .where("entityId")
+          .equals(folder.id)
+          .toArray();
+        if (pendingChanges.some((change) => change.entityType === "folder")) continue;
+
+        if (isStale()) throw new StaleBootstrapError();
+        await db.folders.put({ ...folder, deletedAt });
+        if (isStale()) throw new StaleBootstrapError();
       }
 
       if (isStale()) throw new StaleBootstrapError();

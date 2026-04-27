@@ -904,6 +904,53 @@ describe("bootstrapApp", () => {
     });
   });
 
+  it("rejects a remote note that references a locally deleted folder", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const deletedFolder: FolderRecord = {
+      id: "deleted-folder",
+      name: "Deleted",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: "2026-04-22T09:00:00.000Z",
+    };
+    await localDb.folders.put(deletedFolder);
+    await localDb.syncState.put({ key: "syncCursor", value: "37" });
+    localDb.close();
+    const remoteNote: NoteRecord = {
+      id: "remote-note",
+      folderId: deletedFolder.id,
+      title: "Remote note",
+      bodyMd: "# Remote",
+      bodyPlain: "Remote",
+      currentRevision: 2,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+      deletedAt: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [remoteNote],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(deletedFolder.id)).resolves.toEqual(deletedFolder);
+    await expect(db.notes.get(remoteNote.id)).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "37",
+    });
+    expect(getScheduler()).not.toBeNull();
+  });
+
   it("clears stale active note when fallback folder has no active notes", async () => {
     installStorageMock();
     const localDb = createWebDatabase("markean");
@@ -1052,6 +1099,133 @@ describe("bootstrapApp", () => {
     const db = getDb();
     await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
     await expect(db.notes.get(remoteNote.id)).resolves.toEqual(remoteNote);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "42",
+    });
+  });
+
+  it("soft-deletes non-pending local records absent from valid remote active snapshot", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "local-folder",
+      name: "Local",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const localNote: NoteRecord = {
+      id: "local-note",
+      folderId: localFolder.id,
+      title: "Local note",
+      bodyMd: "# Local",
+      bodyPlain: "Local",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.notes.put(localNote);
+    localDb.close();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    const prunedFolder = await db.folders.get(localFolder.id);
+    const prunedNote = await db.notes.get(localNote.id);
+    expect(prunedFolder).toMatchObject({
+      ...localFolder,
+      deletedAt: expect.any(String),
+    });
+    expect(prunedNote).toMatchObject({
+      ...localNote,
+      deletedAt: expect.any(String),
+    });
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(0);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "42",
+    });
+  });
+
+  it("preserves pending local records absent from valid remote active snapshot", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "pending-folder",
+      name: "Pending folder",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const localNote: NoteRecord = {
+      id: "pending-note",
+      folderId: localFolder.id,
+      title: "Pending note",
+      bodyMd: "# Pending",
+      bodyPlain: "Pending",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.notes.put(localNote);
+    await queueChange(localDb, {
+      entityType: "folder",
+      entityId: localFolder.id,
+      operation: "update",
+      baseRevision: localFolder.currentRevision,
+    });
+    await queueChange(localDb, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "update",
+      baseRevision: localNote.currentRevision,
+    });
+    localDb.close();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+    await expect(db.notes.get(localNote.id)).resolves.toEqual(localNote);
+    const pendingChanges = await db.pendingChanges.toArray();
+    expect(pendingChanges).toHaveLength(2);
+    expect(pendingChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityType: "folder",
+          entityId: localFolder.id,
+        }),
+        expect.objectContaining({
+          entityType: "note",
+          entityId: localNote.id,
+        }),
+      ]),
+    );
     await expect(db.syncState.get("syncCursor")).resolves.toEqual({
       key: "syncCursor",
       value: "42",
