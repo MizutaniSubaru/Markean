@@ -223,6 +223,64 @@ describe("App store integration", () => {
     expect(schedulerState.scheduler?.requestSync).not.toHaveBeenCalled();
   });
 
+  it("does not restore a removed note from overlapping optimistic note rollbacks", async () => {
+    const existingNote = note({
+      id: "note_existing",
+      folderId: "folder_notes",
+      title: "Existing note",
+      bodyMd: "# Existing note",
+    });
+    const firstCreate = deferred<void>();
+    const secondCreate = deferred<void>();
+    useFoldersStore.getState().loadFolders([folder({ id: "folder_notes", name: "Notes" })]);
+    useNotesStore.getState().loadNotes([existingNote]);
+    useEditorStore.setState({
+      activeFolderId: "folder_notes",
+      activeNoteId: "note_existing",
+      searchQuery: "",
+      mobileView: "editor",
+      newNoteId: null,
+    });
+    persistence.createNote
+      .mockReturnValueOnce(firstCreate.promise)
+      .mockReturnValueOnce(secondCreate.promise);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "New Note" }));
+    const firstOptimisticNoteId = useEditorStore.getState().activeNoteId;
+
+    fireEvent.click(screen.getByRole("button", { name: "New Note" }));
+    const secondOptimisticNoteId = useEditorStore.getState().activeNoteId;
+    expect(secondOptimisticNoteId).not.toBe(firstOptimisticNoteId);
+
+    firstCreate.reject(new Error("first note write failed"));
+    await waitFor(() => {
+      expect(useNotesStore.getState().notes.map((existing) => existing.id)).toEqual([
+        secondOptimisticNoteId,
+        "note_existing",
+      ]);
+      expect(useEditorStore.getState()).toMatchObject({
+        activeFolderId: "folder_notes",
+        activeNoteId: secondOptimisticNoteId,
+        newNoteId: secondOptimisticNoteId,
+      });
+    });
+
+    secondCreate.reject(new Error("second note write failed"));
+    await waitFor(() => {
+      expect(useNotesStore.getState().notes).toEqual([existingNote]);
+      expect(useEditorStore.getState()).toMatchObject({
+        activeFolderId: "folder_notes",
+        activeNoteId: "note_existing",
+        mobileView: "editor",
+        newNoteId: null,
+      });
+    });
+    expect(useEditorStore.getState().activeNoteId).not.toBe(firstOptimisticNoteId);
+    expect(useEditorStore.getState().activeNoteId).not.toBe(secondOptimisticNoteId);
+  });
+
   it("rolls back an optimistic folder create when persistence rejects", async () => {
     const existingFolder = folder({ id: "folder_notes", name: "Notes" });
     const existingNote = note({
@@ -257,5 +315,67 @@ describe("App store integration", () => {
     });
     expect(useSyncStore.getState().status).toBe("idle");
     expect(schedulerState.scheduler?.requestSync).not.toHaveBeenCalled();
+  });
+
+  it("does not restore a removed folder from overlapping optimistic folder rollbacks", async () => {
+    const existingFolder = folder({ id: "folder_notes", name: "Notes" });
+    const existingNote = note({
+      id: "note_existing",
+      folderId: "folder_notes",
+      title: "Existing note",
+      bodyMd: "# Existing note",
+    });
+    const firstCreate = deferred<void>();
+    const secondCreate = deferred<void>();
+    useFoldersStore.getState().loadFolders([existingFolder]);
+    useNotesStore.getState().loadNotes([existingNote]);
+    useEditorStore.setState({
+      activeFolderId: "folder_notes",
+      activeNoteId: "note_existing",
+      searchQuery: "",
+      mobileView: "editor",
+      newNoteId: null,
+    });
+    persistence.createFolder
+      .mockReturnValueOnce(firstCreate.promise)
+      .mockReturnValueOnce(secondCreate.promise);
+    vi.spyOn(window, "prompt")
+      .mockReturnValueOnce("Drafts")
+      .mockReturnValueOnce("Projects");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "New Folder" }));
+    const firstOptimisticFolderId = useEditorStore.getState().activeFolderId;
+
+    fireEvent.click(screen.getByRole("button", { name: "New Folder" }));
+    const secondOptimisticFolderId = useEditorStore.getState().activeFolderId;
+    expect(secondOptimisticFolderId).not.toBe(firstOptimisticFolderId);
+
+    firstCreate.reject(new Error("first folder write failed"));
+    await waitFor(() => {
+      expect(useFoldersStore.getState().folders.map((existing) => existing.id)).toEqual([
+        "folder_notes",
+        secondOptimisticFolderId,
+      ]);
+      expect(useEditorStore.getState()).toMatchObject({
+        activeFolderId: secondOptimisticFolderId,
+        activeNoteId: "",
+        newNoteId: null,
+      });
+    });
+
+    secondCreate.reject(new Error("second folder write failed"));
+    await waitFor(() => {
+      expect(useFoldersStore.getState().folders).toEqual([existingFolder]);
+      expect(useEditorStore.getState()).toMatchObject({
+        activeFolderId: "folder_notes",
+        activeNoteId: "note_existing",
+        mobileView: "editor",
+        newNoteId: null,
+      });
+    });
+    expect(useEditorStore.getState().activeFolderId).not.toBe(firstOptimisticFolderId);
+    expect(useEditorStore.getState().activeFolderId).not.toBe(secondOptimisticFolderId);
   });
 });

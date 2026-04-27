@@ -26,6 +26,38 @@ function isActiveNote(note: NoteRecord): boolean {
   return note.deletedAt === null;
 }
 
+type EditorSnapshot = Pick<
+  ReturnType<typeof useEditorStore.getState>,
+  "activeFolderId" | "activeNoteId" | "searchQuery" | "mobileView" | "newNoteId"
+>;
+
+function sortNotesNewestFirst(notes: NoteRecord[]): NoteRecord[] {
+  return [...notes].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function revalidateEditorSnapshot(snapshot: EditorSnapshot): EditorSnapshot {
+  const folders = useFoldersStore.getState().folders.filter(isActiveFolder);
+  const notes = useNotesStore.getState().notes.filter(isActiveNote);
+  const folderIds = new Set(folders.map((folder) => folder.id));
+  const noteById = new Map(notes.map((note) => [note.id, note]));
+  const snapshotNote = noteById.get(snapshot.activeNoteId);
+  const activeFolderId = folderIds.has(snapshot.activeFolderId)
+    ? snapshot.activeFolderId
+    : folders[0]?.id ?? "";
+  const activeNoteId =
+    snapshotNote?.folderId === activeFolderId
+      ? snapshotNote.id
+      : sortNotesNewestFirst(notes.filter((note) => note.folderId === activeFolderId))[0]?.id ?? "";
+  const newNote = snapshot.newNoteId ? noteById.get(snapshot.newNoteId) : undefined;
+
+  return {
+    ...snapshot,
+    activeFolderId,
+    activeNoteId,
+    newNoteId: newNote && folderIds.has(newNote.folderId) ? newNote.id : null,
+  };
+}
+
 function persistCreatedEntity(
   persist: () => Promise<void>,
   errorMessage: string,
@@ -138,14 +170,8 @@ function AppShell() {
         }));
         useEditorStore.setState((state) =>
           state.activeFolderId === folder.id
-            ? {
-                activeFolderId: previousEditorState.activeFolderId,
-                activeNoteId: previousEditorState.activeNoteId,
-                searchQuery: previousEditorState.searchQuery,
-                mobileView: previousEditorState.mobileView,
-                newNoteId: previousEditorState.newNoteId,
-              }
-            : state,
+            ? revalidateEditorSnapshot(previousEditorState)
+            : revalidateEditorSnapshot(state),
         );
       },
     );
@@ -176,16 +202,13 @@ function AppShell() {
         }));
         useEditorStore.setState((state) => {
           if (state.activeNoteId === note.id) {
-            return {
-              activeFolderId: previousEditorState.activeFolderId,
-              activeNoteId: previousEditorState.activeNoteId,
-              searchQuery: previousEditorState.searchQuery,
-              mobileView: previousEditorState.mobileView,
-              newNoteId: previousEditorState.newNoteId,
-            };
+            return revalidateEditorSnapshot(previousEditorState);
           }
 
-          return state.newNoteId === note.id ? { newNoteId: null } : state;
+          return revalidateEditorSnapshot({
+            ...state,
+            newNoteId: state.newNoteId === note.id ? null : state.newNoteId,
+          });
         });
       },
     );
