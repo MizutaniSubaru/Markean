@@ -60,7 +60,6 @@ describe("conflict.handler", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
     await db.notes.put(note1);
-    await seedPendingNoteChange("note_1");
     useNotesStore.getState().loadNotes([note1]);
 
     await handleConflicts([

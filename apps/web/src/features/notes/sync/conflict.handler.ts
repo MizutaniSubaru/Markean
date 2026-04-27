@@ -27,12 +27,24 @@ export async function handleConflicts(conflicts: Conflict[]): Promise<void> {
       .equals(conflict.entityId)
       .filter((change) => change.entityType === "note")
       .toArray();
-    if (originalChanges.length === 0) continue;
+    const copyTitle = `${localNote.title} (conflict copy)`;
+    const existingCopy = await db.notes
+      .filter(
+        (note) =>
+          note.id !== localNote.id &&
+          note.folderId === localNote.folderId &&
+          note.title === copyTitle &&
+          note.bodyMd === localNote.bodyMd &&
+          note.bodyPlain === localNote.bodyPlain &&
+          note.currentRevision === 0,
+      )
+      .first();
+    if (originalChanges.length === 0 && existingCopy) continue;
 
     const copy: NoteRecord = {
       ...localNote,
       id: `note_${crypto.randomUUID()}`,
-      title: `${localNote.title} (conflict copy)`,
+      title: copyTitle,
       currentRevision: 0,
       updatedAt: new Date().toISOString(),
       deletedAt: null,
