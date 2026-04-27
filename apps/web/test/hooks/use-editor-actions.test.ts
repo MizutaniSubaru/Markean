@@ -5,6 +5,7 @@ import type { NoteRecord } from "@markean/domain";
 import { createWebDatabase, type MarkeanWebDatabase } from "@markean/storage-web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb, initDb, resetDbForTests } from "../../src/features/notes/persistence/db";
+import * as notesPersistence from "../../src/features/notes/persistence/notes.persistence";
 import { useEditorActions } from "../../src/features/notes/hooks/useEditorActions";
 import { useNotesStore } from "../../src/features/notes/store/notes.store";
 import { useSyncStore } from "../../src/features/notes/store/sync.store";
@@ -32,6 +33,16 @@ function note(overrides: Partial<NoteRecord> & Pick<NoteRecord, "id">): NoteReco
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("useEditorActions", () => {
   let db: MarkeanWebDatabase;
 
@@ -53,6 +64,7 @@ describe("useEditorActions", () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     await db.delete();
     resetDbForTests();
     schedulerState.scheduler = null;
@@ -169,6 +181,21 @@ describe("useEditorActions", () => {
     expect(schedulerState.scheduler.requestSync).not.toHaveBeenCalled();
   });
 
+  it("restores the store and skips sync when the note exists in store but is missing from DB", async () => {
+    const existing = note({ id: "note_1" });
+    useNotesStore.getState().loadNotes([existing]);
+    schedulerState.scheduler = { requestSync: vi.fn() };
+    const { result } = renderHook(() => useEditorActions());
+
+    await result.current.changeBody("note_1", "# Missing DB row");
+
+    expect(useNotesStore.getState().notes).toEqual([existing]);
+    await expect(getDb().notes.get("note_1")).resolves.toBeUndefined();
+    await expect(getDb().pendingChanges.toArray()).resolves.toEqual([]);
+    expect(useSyncStore.getState().status).toBe("idle");
+    expect(schedulerState.scheduler.requestSync).not.toHaveBeenCalled();
+  });
+
   it("rolls back the optimistic store update when persistence fails", async () => {
     const existing = note({ id: "note_1" });
     await db.notes.put(existing);
@@ -188,5 +215,45 @@ describe("useEditorActions", () => {
     await expect(getDb().pendingChanges.toArray()).resolves.toEqual([]);
     expect(useSyncStore.getState().status).toBe("idle");
     expect(schedulerState.scheduler.requestSync).not.toHaveBeenCalled();
+  });
+
+  it("does not roll back over a newer optimistic edit when an earlier persistence fails", async () => {
+    const existing = note({ id: "note_1" });
+    await db.notes.put(existing);
+    useNotesStore.getState().loadNotes([existing]);
+    schedulerState.scheduler = { requestSync: vi.fn() };
+    const firstPersistence = deferred<boolean>();
+    let calls = 0;
+    vi.spyOn(notesPersistence, "updateNote").mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) return firstPersistence.promise;
+      return true;
+    });
+    const { result } = renderHook(() => useEditorActions());
+
+    const firstChange = result.current.changeBody("note_1", "# First");
+    expect(useNotesStore.getState().notes[0]).toMatchObject({
+      title: "First",
+      bodyMd: "# First",
+      bodyPlain: "First",
+    });
+
+    await result.current.changeBody("note_1", "# Second");
+    expect(useNotesStore.getState().notes[0]).toMatchObject({
+      title: "Second",
+      bodyMd: "# Second",
+      bodyPlain: "Second",
+    });
+
+    firstPersistence.reject(new Error("first persistence failed"));
+    await expect(firstChange).rejects.toThrow("first persistence failed");
+
+    expect(useNotesStore.getState().notes[0]).toMatchObject({
+      title: "Second",
+      bodyMd: "# Second",
+      bodyPlain: "Second",
+    });
+    expect(useSyncStore.getState().status).toBe("unsynced");
+    expect(schedulerState.scheduler.requestSync).toHaveBeenCalledTimes(1);
   });
 });

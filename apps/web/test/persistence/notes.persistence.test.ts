@@ -100,7 +100,7 @@ describe("notes.persistence", () => {
     vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
     await db.notes.put(note1);
 
-    await updateNote("note_1", { title: "Updated" });
+    await expect(updateNote("note_1", { title: "Updated" })).resolves.toBe(true);
 
     await expect(db.notes.get("note_1")).resolves.toEqual({
       ...note1,
@@ -133,7 +133,7 @@ describe("notes.persistence", () => {
   });
 
   it("updating a missing note does nothing and queues no change", async () => {
-    await updateNote("missing", { title: "Ignored" });
+    await expect(updateNote("missing", { title: "Ignored" })).resolves.toBe(false);
 
     await expect(db.notes.toArray()).resolves.toEqual([]);
     await expect(db.pendingChanges.toArray()).resolves.toEqual([]);

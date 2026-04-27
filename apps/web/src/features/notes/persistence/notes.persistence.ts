@@ -28,11 +28,11 @@ export async function createNote(note: NoteRecord): Promise<void> {
 export async function updateNote(
   id: string,
   changes: NoteUpdateChanges,
-): Promise<void> {
+): Promise<boolean> {
   const db = getDb();
-  await db.transaction("rw", db.notes, db.pendingChanges, async () => {
+  return db.transaction("rw", db.notes, db.pendingChanges, async () => {
     const existing = await db.notes.get(id);
-    if (!existing) return;
+    if (!existing) return false;
 
     await db.notes.update(id, { ...changes, updatedAt: new Date().toISOString() });
     await queueChange(db, {
@@ -41,6 +41,7 @@ export async function updateNote(
       operation: "update",
       baseRevision: existing.currentRevision,
     });
+    return true;
   });
 }
 

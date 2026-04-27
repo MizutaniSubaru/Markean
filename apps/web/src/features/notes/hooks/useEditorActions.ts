@@ -1,4 +1,4 @@
-import { markdownToPlainText } from "@markean/domain";
+import { markdownToPlainText, type NoteRecord } from "@markean/domain";
 import { getScheduler } from "../../../app/bootstrap";
 import { updateNote as persistNoteUpdate } from "../persistence/notes.persistence";
 import { useNotesStore } from "../store/notes.store";
@@ -17,6 +17,18 @@ function deriveTitleFromBody(bodyMd: string): string {
   );
 }
 
+function restoreIfOptimisticWriteUnchanged(
+  noteId: string,
+  previousNote: NoteRecord,
+  optimisticNote: NoteRecord,
+): void {
+  useNotesStore.setState((state) => ({
+    notes: state.notes.map((note) =>
+      note.id === noteId && note === optimisticNote ? previousNote : note,
+    ),
+  }));
+}
+
 export function useEditorActions(): EditorActions {
   const updateNote = useNotesStore((state) => state.updateNote);
 
@@ -30,13 +42,20 @@ export function useEditorActions(): EditorActions {
       const bodyPlain = markdownToPlainText(bodyMd);
 
       updateNote(noteId, { bodyMd, title });
+      const optimisticNote = useNotesStore.getState().notes.find((note) => note.id === noteId);
+      if (!optimisticNote) return;
+
+      let persisted = false;
       try {
-        await persistNoteUpdate(noteId, { bodyMd, bodyPlain, title });
+        persisted = await persistNoteUpdate(noteId, { bodyMd, bodyPlain, title });
       } catch (error) {
-        useNotesStore.setState((state) => ({
-          notes: state.notes.map((note) => (note.id === noteId ? previousNote : note)),
-        }));
+        restoreIfOptimisticWriteUnchanged(noteId, previousNote, optimisticNote);
         throw error;
+      }
+
+      if (!persisted) {
+        restoreIfOptimisticWriteUnchanged(noteId, previousNote, optimisticNote);
+        return;
       }
 
       useSyncStore.getState().markUnsynced();
