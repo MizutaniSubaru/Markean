@@ -76,6 +76,8 @@ export function createSyncService(apiClient: ApiClient, options: SyncServiceOpti
     } catch {
       if (shouldApply()) {
         useSyncStore.getState().markError();
+      } else {
+        markCancelled();
       }
     }
   }

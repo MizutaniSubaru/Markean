@@ -64,10 +64,12 @@ function createMockApiClient(options?: { conflicts?: Conflict[] }) {
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function resetStores(): void {
@@ -223,6 +225,29 @@ describe("sync.service", () => {
     expect(useFoldersStore.getState().folders).toEqual([]);
     expect(useSyncStore.getState().status).not.toBe("syncing");
     expect(useSyncStore.getState().lastSyncedAt).toBeNull();
+  });
+
+  it("clears syncing status when an inactive sync rejects", async () => {
+    const pullResult = createDeferred<never>();
+    let active = true;
+    const apiClient = createMockApiClient();
+    apiClient.syncPull.mockReturnValue(pullResult.promise);
+    const service = createSyncService(apiClient, {
+      shouldApply: () => active,
+    });
+
+    const cycle = service.executeSyncCycle();
+    await vi.waitFor(() => expect(apiClient.syncPull).toHaveBeenCalledTimes(1));
+    expect(useSyncStore.getState().status).toBe("syncing");
+
+    active = false;
+    pullResult.reject(new Error("network failed after cancellation"));
+    await cycle;
+
+    expect(useSyncStore.getState()).toMatchObject({
+      status: "unsynced",
+      lastSyncedAt: null,
+    });
   });
 
   it("creates a conflict copy when sync returns a note conflict", async () => {
