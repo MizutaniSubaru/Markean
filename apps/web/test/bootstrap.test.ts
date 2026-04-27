@@ -1554,6 +1554,51 @@ describe("bootstrapApp", () => {
     expect(getScheduler()).not.toBeNull();
   });
 
+  it("accepts a remote note when its local parent is created before remote merge", async () => {
+    installStorageMock();
+    const localFolder: FolderRecord = {
+      id: "created-folder",
+      name: "Created folder",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-22T11:00:00.000Z",
+      deletedAt: null,
+    };
+    const remoteNote: NoteRecord = {
+      id: "remote-note",
+      folderId: localFolder.id,
+      title: "Remote note",
+      bodyMd: "# Remote",
+      bodyPlain: "Remote",
+      currentRevision: 4,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockImplementation(async () => {
+          await getDb().folders.put(localFolder);
+          return {
+            folders: [],
+            notes: [remoteNote],
+            syncCursor: 42,
+          };
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+    await expect(db.notes.get(remoteNote.id)).resolves.toEqual(remoteNote);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "42",
+    });
+  });
+
   it("soft-deletes non-pending local records absent from valid remote active snapshot", async () => {
     installStorageMock();
     const localDb = createWebDatabase("markean");

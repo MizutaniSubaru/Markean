@@ -57,7 +57,6 @@ class StaleBootstrapError extends Error {
 
 function isValidBootstrapResponse(
   value: unknown,
-  existingFolderIds: Set<string>,
 ): value is { folders: FolderRecord[]; notes: NoteRecord[]; syncCursor: number } {
   if (!value || typeof value !== "object") return false;
   const bootstrap = value as Record<string, unknown>;
@@ -70,11 +69,7 @@ function isValidBootstrapResponse(
   if (!hasUniqueIds(bootstrap.folders)) return false;
   if (!hasUniqueIds(bootstrap.notes)) return false;
 
-  const remoteFolderIds = new Set(bootstrap.folders.map((folder) => folder.id));
-  return bootstrap.notes.every(
-    (note) =>
-      existingFolderIds.has(note.folderId) || remoteFolderIds.has(note.folderId),
-  );
+  return true;
 }
 
 function hasValidRemoteNoteParents(
@@ -516,12 +511,7 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       db.close();
       return;
     }
-    const existingFolderIds = new Set(
-      localFolders
-        .filter((folder) => !folder.deletedAt)
-        .map((folder) => folder.id),
-    );
-    if (!isValidBootstrapResponse(bootstrap, existingFolderIds)) {
+    if (!isValidBootstrapResponse(bootstrap)) {
       throw new Error("Invalid bootstrap response");
     }
     const serverNotes = bootstrap.notes;
