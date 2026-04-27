@@ -427,6 +427,34 @@ function restoreEditorSelection(
   useEditorStore.getState().selectNote("");
 }
 
+function revalidateEditorSelection(
+  localNotes: NoteRecord[],
+  localFolders: FolderRecord[],
+): void {
+  const activeFolders = localFolders.filter((folder) => !folder.deletedAt);
+  const activeNotes = localNotes.filter((note) => !note.deletedAt);
+  const { activeFolderId, activeNoteId } = useEditorStore.getState();
+  if (activeFolderId === "" && activeNoteId === "") return;
+
+  const selectedFolder = activeFolders.find((folder) => folder.id === activeFolderId);
+
+  if (!selectedFolder) {
+    restoreEditorSelection(localNotes, localFolders, null);
+    return;
+  }
+
+  const selectedNote = activeNotes.find(
+    (note) => note.id === activeNoteId && note.folderId === selectedFolder.id,
+  );
+  if (selectedNote) return;
+
+  const firstNoteInSelectedFolder = activeNotes.find(
+    (note) => note.folderId === selectedFolder.id,
+  );
+  useEditorStore.getState().selectFolder(selectedFolder.id);
+  useEditorStore.getState().selectNote(firstNoteInSelectedFolder?.id ?? "");
+}
+
 export async function bootstrapApp(baseUrl = ""): Promise<void> {
   const generation = bootstrapGeneration + 1;
   bootstrapGeneration = generation;
@@ -575,6 +603,7 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
     }
     useNotesStore.getState().loadNotes(freshNotes);
     useFoldersStore.getState().loadFolders(freshFolders);
+    revalidateEditorSelection(freshNotes, freshFolders);
   } catch (error) {
     if (error instanceof StaleBootstrapError) {
       localScheduler.stop();

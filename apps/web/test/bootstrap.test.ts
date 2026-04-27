@@ -1507,6 +1507,212 @@ describe("bootstrapApp", () => {
     });
   });
 
+  it("revalidates editor selection when remote snapshot deletes the selected note", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "notes",
+      name: "Notes",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const selectedNote: NoteRecord = {
+      id: "a-selected-note",
+      folderId: localFolder.id,
+      title: "Selected note",
+      bodyMd: "# Selected",
+      bodyPlain: "Selected",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const remainingNote: NoteRecord = {
+      id: "b-remaining-note",
+      folderId: localFolder.id,
+      title: "Remaining note",
+      bodyMd: "# Remaining",
+      bodyPlain: "Remaining",
+      currentRevision: 2,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.notes.bulkPut([selectedNote, remainingNote]);
+    localDb.close();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [localFolder],
+          notes: [remainingNote],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.notes.get(selectedNote.id)).resolves.toMatchObject({
+      deletedAt: expect.any(String),
+    });
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: localFolder.id,
+      activeNoteId: remainingNote.id,
+    });
+  });
+
+  it("revalidates editor selection when remote snapshot deletes the selected folder", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const selectedFolder: FolderRecord = {
+      id: "a-selected-folder",
+      name: "Selected",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const remainingFolder: FolderRecord = {
+      id: "b-remaining-folder",
+      name: "Remaining",
+      sortOrder: 1,
+      currentRevision: 2,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const selectedNote: NoteRecord = {
+      id: "a-selected-note",
+      folderId: selectedFolder.id,
+      title: "Selected note",
+      bodyMd: "# Selected",
+      bodyPlain: "Selected",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const remainingNote: NoteRecord = {
+      id: "b-remaining-note",
+      folderId: remainingFolder.id,
+      title: "Remaining note",
+      bodyMd: "# Remaining",
+      bodyPlain: "Remaining",
+      currentRevision: 2,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.bulkPut([selectedFolder, remainingFolder]);
+    await localDb.notes.bulkPut([selectedNote, remainingNote]);
+    localDb.close();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [remainingFolder],
+          notes: [remainingNote],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(selectedFolder.id)).resolves.toMatchObject({
+      deletedAt: expect.any(String),
+    });
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: remainingFolder.id,
+      activeNoteId: remainingNote.id,
+    });
+  });
+
+  it("preserves valid editor selection after remote merge", async () => {
+    const { store } = installStorageMock();
+    store.set(
+      "markean:workspace",
+      JSON.stringify({
+        folders: [
+          { id: "first", name: "First" },
+          { id: "second", name: "Second" },
+        ],
+        notes: [
+          {
+            id: "first_note",
+            folderId: "first",
+            title: "First note",
+            body: "# First",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+          {
+            id: "second_note",
+            folderId: "second",
+            title: "Second note",
+            body: "# Second",
+            updatedAt: "2026-04-21T10:00:00.000Z",
+          },
+        ],
+        activeFolderId: "second",
+        activeNoteId: "second_note",
+      }),
+    );
+    const remoteFirstFolder: FolderRecord = {
+      id: "first",
+      name: "First",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const remoteSecondFolder: FolderRecord = {
+      id: "second",
+      name: "Second",
+      sortOrder: 1,
+      currentRevision: 1,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const remoteFirstNote: NoteRecord = {
+      id: "first_note",
+      folderId: "first",
+      title: "First note",
+      bodyMd: "# First",
+      bodyPlain: "First",
+      currentRevision: 1,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const remoteSecondNote: NoteRecord = {
+      id: "second_note",
+      folderId: "second",
+      title: "Second note",
+      bodyMd: "# Second",
+      bodyPlain: "Second",
+      currentRevision: 1,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [remoteFirstFolder, remoteSecondFolder],
+          notes: [remoteFirstNote, remoteSecondNote],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: "second",
+      activeNoteId: "second_note",
+    });
+  });
+
   it("preserves pending local records absent from valid remote active snapshot", async () => {
     installStorageMock();
     const localDb = createWebDatabase("markean");
