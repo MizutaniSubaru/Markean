@@ -171,6 +171,7 @@ export async function pushChanges(
 ): Promise<{ conflicts: Array<{ entityType: string; entityId: string; serverRevision: number }> }> {
   const pending = await db.pendingChanges.toArray();
   if (pending.length === 0) return { conflicts: [] };
+  if (!shouldApply(options)) return { conflicts: [] };
 
   const changes = [];
   for (const p of pending) {
@@ -178,12 +179,16 @@ export async function pushChanges(
 
     if (p.operation !== "delete") {
       if (p.entityType === "note") {
+        if (!shouldApply(options)) return { conflicts: [] };
         const note = await db.notes.get(p.entityId);
+        if (!shouldApply(options)) return { conflicts: [] };
         if (note) {
           payload = { folderId: note.folderId, title: note.title, bodyMd: note.bodyMd };
         }
       } else {
+        if (!shouldApply(options)) return { conflicts: [] };
         const folder = await db.folders.get(p.entityId);
+        if (!shouldApply(options)) return { conflicts: [] };
         if (folder) {
           payload = { name: folder.name, sortOrder: folder.sortOrder };
         }
@@ -200,6 +205,7 @@ export async function pushChanges(
     });
   }
 
+  if (!shouldApply(options)) return { conflicts: [] };
   const result = await apiClient.syncPush({ deviceId, changes });
   const acceptedChanges = pending.slice(0, result.accepted.length);
 

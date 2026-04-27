@@ -359,6 +359,55 @@ describe("sync engine queue", () => {
     });
   });
 
+  it("does not push changes when shouldApply becomes false during payload construction", async () => {
+    const db = createWebDatabase(`test-markean-push-payload-cancel-${crypto.randomUUID()}`);
+    const note: NoteRecord = {
+      id: "note_1",
+      folderId: "folder_1",
+      title: "Local title",
+      bodyMd: "Local body",
+      bodyPlain: "Local body",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await db.notes.put(note);
+    await queueChange(db, {
+      entityType: "note",
+      entityId: note.id,
+      operation: "update",
+      baseRevision: note.currentRevision,
+    });
+
+    const originalGet = db.notes.get.bind(db.notes);
+    let active = true;
+    db.notes.get = (async (key: string) => {
+      const result = await originalGet(key);
+      active = false;
+      return result;
+    }) as typeof db.notes.get;
+    let syncPushCalled = false;
+    const apiClient = {
+      async syncPush() {
+        syncPushCalled = true;
+        return {
+          accepted: [{ acceptedRevision: 2, cursor: 10 }],
+          conflicts: [],
+        };
+      },
+      async syncPull() {
+        throw new Error("syncPull should not be called");
+      },
+    };
+
+    await pushChanges(db, apiClient, "device_1", { shouldApply: () => active });
+
+    expect(syncPushCalled).toBe(false);
+    await expect(db.notes.get(note.id)).resolves.toEqual(note);
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(1);
+    await expect(db.syncState.get("syncCursor")).resolves.toBeUndefined();
+  });
+
   it("fully reconciles accepted push changes when shouldApply becomes false during revision update", async () => {
     const db = createWebDatabase(`test-markean-push-inflight-cancel-${crypto.randomUUID()}`);
     const note: NoteRecord = {

@@ -2207,6 +2207,66 @@ describe("bootstrapApp", () => {
     });
   });
 
+  it("preserves parent folders for pending notes absent from valid remote active snapshot", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "pending-note-parent",
+      name: "Pending note parent",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const localNote: NoteRecord = {
+      id: "pending-note-with-parent",
+      folderId: localFolder.id,
+      title: "Pending note",
+      bodyMd: "# Pending",
+      bodyPlain: "Pending",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.notes.put(localNote);
+    await localDb.syncState.put({ key: "syncCursor", value: "3" });
+    await queueChange(localDb, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "update",
+      baseRevision: localNote.currentRevision,
+    });
+    localDb.close();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.notes.get(localNote.id)).resolves.toEqual(localNote);
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+    await expect(db.pendingChanges.toArray()).resolves.toEqual([
+      expect.objectContaining({
+        entityType: "note",
+        entityId: localNote.id,
+        operation: "update",
+      }),
+    ]);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "3",
+    });
+  });
+
   it("does not overwrite local records with pending changes during remote bootstrap", async () => {
     installStorageMock();
     const localDb = createWebDatabase("markean");

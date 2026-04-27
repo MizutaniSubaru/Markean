@@ -636,20 +636,22 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       }
 
       const deletedAt = new Date().toISOString();
+      const folderIdsReferencedByPreservedPendingNotes = new Set<string>();
       const localNotesInTransaction = await db.notes.toArray();
       for (const note of localNotesInTransaction) {
         if (note.deletedAt || serverNoteIds.has(note.id)) continue;
 
         const pendingChanges = await db.pendingChanges.where("entityId").equals(note.id).toArray();
-        if (
-          pendingChanges.some(
-            (change) => change.entityType === "note" && change.operation !== "create",
-          )
-        ) {
-          skippedPendingBootstrapConflict = true;
+        const notePendingChanges = pendingChanges.filter(
+          (change) => change.entityType === "note",
+        );
+        if (notePendingChanges.length > 0) {
+          folderIdsReferencedByPreservedPendingNotes.add(note.folderId);
+          if (notePendingChanges.some((change) => change.operation !== "create")) {
+            skippedPendingBootstrapConflict = true;
+          }
           continue;
         }
-        if (pendingChanges.some((change) => change.entityType === "note")) continue;
 
         if (isStale()) throw new StaleBootstrapError();
         await db.notes.put({ ...note, deletedAt });
@@ -660,6 +662,7 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       for (const folder of localFoldersInTransaction) {
         if (folder.deletedAt || serverFolderIds.has(folder.id)) continue;
         if (serverReferencedFolderIds.has(folder.id)) continue;
+        if (folderIdsReferencedByPreservedPendingNotes.has(folder.id)) continue;
 
         const pendingChanges = await db.pendingChanges
           .where("entityId")
