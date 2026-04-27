@@ -29,7 +29,13 @@ export function createSyncService(apiClient: ApiClient) {
       const [notes, folders] = await Promise.all([getAllNotes(), getAllFolders()]);
       useNotesStore.getState().loadNotes(notes);
       useFoldersStore.getState().loadFolders(folders);
-      useSyncStore.getState().markSynced();
+
+      const pendingChanges = await db.pendingChanges.toArray();
+      if (pendingChanges.length === 0) {
+        useSyncStore.getState().markSynced();
+      } else {
+        useSyncStore.getState().markUnsynced();
+      }
     } catch {
       useSyncStore.getState().markError();
     }

@@ -216,6 +216,10 @@ describe("sync.service", () => {
       operation: "create",
       baseRevision: 0,
     });
+    expect(useSyncStore.getState()).toMatchObject({
+      status: "unsynced",
+      lastSyncedAt: null,
+    });
   });
 
   it("preserves the local edit in the conflict copy before pulling server events", async () => {
@@ -308,6 +312,27 @@ describe("sync.service", () => {
     await expect(db.syncState.get("syncCursor")).resolves.toEqual({
       key: "syncCursor",
       value: "9",
+    });
+  });
+
+  it("marks unsynced when pending changes remain after sync", async () => {
+    await db.notes.put(localNote);
+    await queueChange(db, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "update",
+      baseRevision: localNote.currentRevision,
+    });
+    const apiClient = createMockApiClient();
+    apiClient.syncPush.mockResolvedValue({ accepted: [], conflicts: [] });
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(1);
+    expect(useSyncStore.getState()).toMatchObject({
+      status: "unsynced",
+      lastSyncedAt: null,
     });
   });
 
