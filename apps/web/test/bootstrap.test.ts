@@ -59,6 +59,22 @@ function resetStores(): void {
   });
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+async function waitForCondition(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("condition was not met");
+}
+
 describe("migrateFromLocalStorage", () => {
   let db: MarkeanWebDatabase;
 
@@ -246,6 +262,102 @@ describe("migrateFromLocalStorage", () => {
         activeNoteId: "note_1",
       },
     ],
+    [
+      "empty folder id",
+      {
+        folders: [{ id: "", name: "Notes" }],
+        notes: [],
+        activeFolderId: "",
+        activeNoteId: "",
+      },
+    ],
+    [
+      "whitespace note id",
+      {
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [
+          {
+            id: "   ",
+            folderId: "notes",
+            title: "Hello",
+            body: "# Hello",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+        ],
+        activeFolderId: "notes",
+        activeNoteId: "",
+      },
+    ],
+    [
+      "empty note folder id",
+      {
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [
+          {
+            id: "note_1",
+            folderId: "",
+            title: "Hello",
+            body: "# Hello",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+        ],
+        activeFolderId: "notes",
+        activeNoteId: "note_1",
+      },
+    ],
+    [
+      "duplicate folder ids",
+      {
+        folders: [
+          { id: "notes", name: "Notes" },
+          { id: "notes", name: "Duplicate" },
+        ],
+        notes: [],
+        activeFolderId: "notes",
+        activeNoteId: "",
+      },
+    ],
+    [
+      "duplicate note ids",
+      {
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [
+          {
+            id: "note_1",
+            folderId: "notes",
+            title: "Hello",
+            body: "# Hello",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+          {
+            id: "note_1",
+            folderId: "notes",
+            title: "Duplicate",
+            body: "# Duplicate",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+        ],
+        activeFolderId: "notes",
+        activeNoteId: "note_1",
+      },
+    ],
+    [
+      "active note without active folder",
+      {
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [
+          {
+            id: "note_1",
+            folderId: "notes",
+            title: "Hello",
+            body: "# Hello",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+        ],
+        activeFolderId: "",
+        activeNoteId: "note_1",
+      },
+    ],
   ])("leaves malformed workspace entries untouched: %s", async (_name, payload) => {
     const { storage, store } = installStorageMock();
     store.set("markean:workspace", JSON.stringify(payload));
@@ -381,6 +493,48 @@ describe("bootstrapApp", () => {
     resetStores();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("preserves migrated legacy active selection during bootstrap", async () => {
+    const { store } = installStorageMock();
+    store.set(
+      "markean:workspace",
+      JSON.stringify({
+        folders: [
+          { id: "first", name: "First" },
+          { id: "second", name: "Second" },
+        ],
+        notes: [
+          {
+            id: "first_note",
+            folderId: "first",
+            title: "First note",
+            body: "# First",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+          {
+            id: "second_note",
+            folderId: "second",
+            title: "Second note",
+            body: "# Second",
+            updatedAt: "2026-04-21T10:00:00.000Z",
+          },
+        ],
+        activeFolderId: "second",
+        activeNoteId: "second_note",
+      }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("offline")),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: "second",
+      activeNoteId: "second_note",
+    });
   });
 
   it("creates a welcome note, loads local stores, and starts scheduler when remote bootstrap fails", async () => {
@@ -635,5 +789,84 @@ describe("bootstrapApp", () => {
     );
     await expect(db.folders.get(pendingFolder.id)).resolves.toEqual(pendingFolder);
     await expect(db.notes.get(pendingNote.id)).resolves.toEqual(pendingNote);
+  });
+
+  it("ignores stale overlapping bootstrap results and starts only the latest scheduler lifecycle", async () => {
+    installStorageMock();
+    const firstBootstrap = createDeferred<{
+      folders: FolderRecord[];
+      notes: NoteRecord[];
+      syncCursor: number;
+    }>();
+    const latestFolder: FolderRecord = {
+      id: "race-folder",
+      name: "Latest folder",
+      sortOrder: 1,
+      currentRevision: 2,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const staleFolder: FolderRecord = {
+      ...latestFolder,
+      name: "Stale folder",
+      currentRevision: 9,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+    };
+    const latestNote: NoteRecord = {
+      id: "race-note",
+      folderId: latestFolder.id,
+      title: "Latest note",
+      bodyMd: "# Latest",
+      bodyPlain: "Latest",
+      currentRevision: 2,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const staleNote: NoteRecord = {
+      ...latestNote,
+      title: "Stale note",
+      bodyMd: "# Stale",
+      bodyPlain: "Stale",
+      currentRevision: 9,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+    };
+    const addListener = vi.spyOn(window, "addEventListener");
+    const removeListener = vi.spyOn(window, "removeEventListener");
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        json: vi.fn().mockReturnValue(firstBootstrap.promise),
+      })
+      .mockResolvedValueOnce({
+        json: vi.fn().mockResolvedValue({
+          folders: [latestFolder],
+          notes: [latestNote],
+          syncCursor: 2,
+        }),
+      });
+    vi.stubGlobal("fetch", fetch);
+
+    const staleRun = bootstrapApp("https://example.test");
+    await waitForCondition(() => fetch.mock.calls.length === 1);
+
+    await bootstrapApp("https://example.test");
+    firstBootstrap.resolve({
+      folders: [staleFolder],
+      notes: [staleNote],
+      syncCursor: 9,
+    });
+    await staleRun;
+
+    const db = getDb();
+    await expect(db.folders.get(latestFolder.id)).resolves.toEqual(latestFolder);
+    await expect(db.notes.get(latestNote.id)).resolves.toEqual(latestNote);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "2",
+    });
+    expect(addListener.mock.calls.filter(([event]) => event === "online")).toHaveLength(1);
+    expect(addListener.mock.calls.filter(([event]) => event === "offline")).toHaveLength(1);
+    expect(removeListener.mock.calls.filter(([event]) => event === "online")).toHaveLength(0);
+    expect(removeListener.mock.calls.filter(([event]) => event === "offline")).toHaveLength(0);
   });
 });

@@ -31,10 +31,23 @@ type LegacyWorkspace = {
   activeNoteId: string;
 };
 
+type MigrationSelection = {
+  activeFolderId: string;
+  activeNoteId: string;
+};
+
+function isNonBlank(value: string): boolean {
+  return value.trim().length > 0;
+}
+
 function isLegacyFolder(value: unknown): value is LegacyWorkspace["folders"][number] {
   if (!value || typeof value !== "object") return false;
   const folder = value as Record<string, unknown>;
-  return typeof folder.id === "string" && typeof folder.name === "string";
+  return (
+    typeof folder.id === "string" &&
+    isNonBlank(folder.id) &&
+    typeof folder.name === "string"
+  );
 }
 
 function isLegacyNote(value: unknown): value is LegacyWorkspace["notes"][number] {
@@ -42,7 +55,9 @@ function isLegacyNote(value: unknown): value is LegacyWorkspace["notes"][number]
   const note = value as Record<string, unknown>;
   return (
     typeof note.id === "string" &&
+    isNonBlank(note.id) &&
     typeof note.folderId === "string" &&
+    isNonBlank(note.folderId) &&
     typeof note.title === "string" &&
     typeof note.body === "string" &&
     typeof note.updatedAt === "string"
@@ -51,9 +66,16 @@ function isLegacyNote(value: unknown): value is LegacyWorkspace["notes"][number]
 
 function hasValidLegacyReferences(workspace: LegacyWorkspace): boolean {
   const folderIds = new Set(workspace.folders.map((folder) => folder.id));
+  if (folderIds.size !== workspace.folders.length) return false;
+
   const notesById = new Map(workspace.notes.map((note) => [note.id, note]));
+  if (notesById.size !== workspace.notes.length) return false;
 
   if (workspace.activeFolderId !== "" && !folderIds.has(workspace.activeFolderId)) {
+    return false;
+  }
+
+  if (workspace.activeFolderId === "" && workspace.activeNoteId !== "") {
     return false;
   }
 
@@ -124,28 +146,28 @@ function removeLegacyDrafts(): void {
   }
 }
 
-export async function migrateFromLocalStorage(): Promise<void> {
+async function migrateFromLocalStorageInternal(): Promise<MigrationSelection | null> {
   const db = getDb();
   const existingCount = (await db.notes.count()) + (await db.folders.count());
-  if (existingCount > 0) return;
+  if (existingCount > 0) return null;
 
   const raw = readLocalStorage(WORKSPACE_KEY);
-  if (!raw) return;
+  if (!raw) return null;
 
   let workspace: LegacyWorkspace;
   try {
     workspace = JSON.parse(raw) as LegacyWorkspace;
   } catch {
-    return;
+    return null;
   }
 
-  if (!workspace || typeof workspace !== "object") return;
-  if (!Array.isArray(workspace.folders) || !Array.isArray(workspace.notes)) return;
-  if (typeof workspace.activeFolderId !== "string") return;
-  if (typeof workspace.activeNoteId !== "string") return;
-  if (!workspace.folders.every(isLegacyFolder)) return;
-  if (!workspace.notes.every(isLegacyNote)) return;
-  if (!hasValidLegacyReferences(workspace)) return;
+  if (!workspace || typeof workspace !== "object") return null;
+  if (!Array.isArray(workspace.folders) || !Array.isArray(workspace.notes)) return null;
+  if (typeof workspace.activeFolderId !== "string") return null;
+  if (typeof workspace.activeNoteId !== "string") return null;
+  if (!workspace.folders.every(isLegacyFolder)) return null;
+  if (!workspace.notes.every(isLegacyNote)) return null;
+  if (!hasValidLegacyReferences(workspace)) return null;
 
   const now = new Date().toISOString();
   const folders: FolderRecord[] = workspace.folders.map((folder, index) => ({
@@ -196,6 +218,15 @@ export async function migrateFromLocalStorage(): Promise<void> {
   removeLocalStorage(WORKSPACE_KEY);
   removeLegacyDrafts();
   removeLocalStorage(SYNC_STATUS_KEY);
+
+  return {
+    activeFolderId: workspace.activeFolderId,
+    activeNoteId: workspace.activeNoteId,
+  };
+}
+
+export async function migrateFromLocalStorage(): Promise<void> {
+  await migrateFromLocalStorageInternal();
 }
 
 function detectLocale(): string {
@@ -252,32 +283,34 @@ async function ensureWelcomeNote(): Promise<void> {
 }
 
 let scheduler: ReturnType<typeof createSyncScheduler> | null = null;
+let bootstrapGeneration = 0;
 
 export function getScheduler(): ReturnType<typeof createSyncScheduler> | null {
   return scheduler;
 }
 
 export function resetSchedulerForTests(): void {
+  bootstrapGeneration += 1;
   scheduler?.stop();
   scheduler = null;
 }
 
-export async function bootstrapApp(baseUrl = ""): Promise<void> {
-  scheduler?.stop();
-
-  const db = createWebDatabase("markean");
-  const apiClient = createApiClient(baseUrl);
-  initDb(db);
-
-  await migrateFromLocalStorage();
-  await ensureWelcomeNote();
-
-  const [localNotes, localFolders] = await Promise.all([getAllNotes(), getAllFolders()]);
-  useNotesStore.getState().loadNotes(localNotes);
-  useFoldersStore.getState().loadFolders(localFolders);
-
+function restoreEditorSelection(
+  localNotes: NoteRecord[],
+  localFolders: FolderRecord[],
+  migratedSelection: MigrationSelection | null,
+): void {
   const activeFolders = localFolders.filter((folder) => !folder.deletedAt);
   const activeNotes = localNotes.filter((note) => !note.deletedAt);
+
+  if (migratedSelection?.activeFolderId) {
+    useEditorStore.getState().selectFolder(migratedSelection.activeFolderId);
+    if (migratedSelection.activeNoteId) {
+      useEditorStore.getState().selectNote(migratedSelection.activeNoteId);
+    }
+    return;
+  }
+
   const firstFolder = activeFolders[0];
   if (firstFolder) {
     useEditorStore.getState().selectFolder(firstFolder.id);
@@ -286,12 +319,49 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       useEditorStore.getState().selectNote(firstNote.id);
     }
   }
+}
+
+export async function bootstrapApp(baseUrl = ""): Promise<void> {
+  const generation = bootstrapGeneration + 1;
+  bootstrapGeneration = generation;
+  scheduler?.stop();
+  scheduler = null;
+
+  const db = createWebDatabase("markean");
+  const apiClient = createApiClient(baseUrl);
+  initDb(db);
+  const isStale = () => generation !== bootstrapGeneration;
+
+  const migratedSelection = await migrateFromLocalStorageInternal();
+  if (isStale()) {
+    db.close();
+    return;
+  }
+  await ensureWelcomeNote();
+  if (isStale()) {
+    db.close();
+    return;
+  }
+
+  const [localNotes, localFolders] = await Promise.all([getAllNotes(), getAllFolders()]);
+  if (isStale()) {
+    db.close();
+    return;
+  }
+  useNotesStore.getState().loadNotes(localNotes);
+  useFoldersStore.getState().loadFolders(localFolders);
+  restoreEditorSelection(localNotes, localFolders, migratedSelection);
 
   const syncService = createSyncService(apiClient);
-  scheduler = createSyncScheduler(syncService.executeSyncCycle);
+  const localScheduler = createSyncScheduler(syncService.executeSyncCycle);
 
   try {
     const bootstrap = await apiClient.bootstrap();
+    if (isStale()) {
+      localScheduler.stop();
+      db.close();
+      return;
+    }
     const serverNotes = Array.isArray(bootstrap.notes)
       ? (bootstrap.notes as NoteRecord[])
       : [];
@@ -330,11 +400,23 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
     });
 
     const [freshNotes, freshFolders] = await Promise.all([getAllNotes(), getAllFolders()]);
+    if (isStale()) {
+      localScheduler.stop();
+      db.close();
+      return;
+    }
     useNotesStore.getState().loadNotes(freshNotes);
     useFoldersStore.getState().loadFolders(freshFolders);
   } catch {
     // Local data is already loaded; remote bootstrap can recover on the scheduler.
   }
 
+  if (isStale()) {
+    localScheduler.stop();
+    db.close();
+    return;
+  }
+
+  scheduler = localScheduler;
   scheduler.start();
 }
