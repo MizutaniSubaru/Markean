@@ -18,6 +18,7 @@ import {
   getScheduler,
   migrateFromLocalStorage,
   resetSchedulerForTests,
+  setBootstrapConcurrencyHooksForTests,
 } from "../src/app/bootstrap";
 
 function installStorageMock() {
@@ -466,6 +467,55 @@ describe("migrateFromLocalStorage", () => {
     expect(storage.removeItem).toHaveBeenCalledWith("markean:workspace");
   });
 
+  it("does not duplicate pending create changes during overlapping migrations", async () => {
+    const { store } = installStorageMock();
+    store.set(
+      "markean:workspace",
+      JSON.stringify({
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [
+          {
+            id: "note_1",
+            folderId: "notes",
+            title: "Hello",
+            body: "# Hello",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+        ],
+        activeFolderId: "notes",
+        activeNoteId: "note_1",
+      }),
+    );
+    let overlappingRun: Promise<void> | null = null;
+    setBootstrapConcurrencyHooksForTests({
+      beforeMigrationWrite: () => {
+        if (!overlappingRun) {
+          overlappingRun = migrateFromLocalStorage();
+        }
+      },
+    });
+
+    await migrateFromLocalStorage();
+    await overlappingRun;
+
+    const pendingChanges = await db.pendingChanges.toArray();
+    expect(pendingChanges).toHaveLength(2);
+    expect(pendingChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityType: "folder",
+          entityId: "notes",
+          operation: "create",
+        }),
+        expect.objectContaining({
+          entityType: "note",
+          entityId: "note_1",
+          operation: "create",
+        }),
+      ]),
+    );
+  });
+
   it("skips migration when localStorage is unavailable", async () => {
     Object.defineProperty(window, "localStorage", {
       configurable: true,
@@ -608,6 +658,41 @@ describe("bootstrapApp", () => {
           entityId: "welcome-note",
           operation: "create",
           baseRevision: 0,
+        }),
+      ]),
+    );
+  });
+
+  it("does not duplicate welcome pending create changes during overlapping bootstraps", async () => {
+    installStorageMock();
+    const fetch = vi.fn().mockRejectedValue(new Error("offline"));
+    vi.stubGlobal("fetch", fetch);
+    let overlappingRun: Promise<void> | null = null;
+    setBootstrapConcurrencyHooksForTests({
+      beforeWelcomeWrite: () => {
+        if (!overlappingRun) {
+          overlappingRun = bootstrapApp("https://example.test");
+        }
+      },
+    });
+
+    await bootstrapApp("https://example.test");
+    await overlappingRun;
+
+    const db = getDb();
+    const pendingChanges = await db.pendingChanges.toArray();
+    expect(pendingChanges).toHaveLength(2);
+    expect(pendingChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityType: "folder",
+          entityId: "notes",
+          operation: "create",
+        }),
+        expect.objectContaining({
+          entityType: "note",
+          entityId: "welcome-note",
+          operation: "create",
         }),
       ]),
     );
@@ -900,5 +985,77 @@ describe("bootstrapApp", () => {
     expect(addListener.mock.calls.filter(([event]) => event === "offline")).toHaveLength(1);
     expect(removeListener.mock.calls.filter(([event]) => event === "online")).toHaveLength(0);
     expect(removeListener.mock.calls.filter(([event]) => event === "offline")).toHaveLength(0);
+  });
+
+  it("aborts stale remote merge when a newer bootstrap starts during the transaction", async () => {
+    installStorageMock();
+    const staleFolder: FolderRecord = {
+      id: "transaction-folder",
+      name: "Stale folder",
+      sortOrder: 1,
+      currentRevision: 9,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const latestFolder: FolderRecord = {
+      ...staleFolder,
+      name: "Latest folder",
+      currentRevision: 2,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+    };
+    const staleNote: NoteRecord = {
+      id: "transaction-note",
+      folderId: staleFolder.id,
+      title: "Stale note",
+      bodyMd: "# Stale",
+      bodyPlain: "Stale",
+      currentRevision: 9,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const latestNote: NoteRecord = {
+      ...staleNote,
+      title: "Latest note",
+      bodyMd: "# Latest",
+      bodyPlain: "Latest",
+      currentRevision: 2,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+    };
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        json: vi.fn().mockResolvedValue({
+          folders: [staleFolder],
+          notes: [staleNote],
+          syncCursor: 9,
+        }),
+      })
+      .mockResolvedValueOnce({
+        json: vi.fn().mockResolvedValue({
+          folders: [latestFolder],
+          notes: [latestNote],
+          syncCursor: 2,
+        }),
+      });
+    vi.stubGlobal("fetch", fetch);
+    let latestRun: Promise<void> | null = null;
+    setBootstrapConcurrencyHooksForTests({
+      beforeRemoteWrite: () => {
+        if (!latestRun) {
+          latestRun = bootstrapApp("https://example.test");
+        }
+      },
+    });
+
+    await bootstrapApp("https://example.test");
+    await latestRun;
+
+    const db = getDb();
+    await expect(db.folders.get(latestFolder.id)).resolves.toEqual(latestFolder);
+    await expect(db.notes.get(latestNote.id)).resolves.toEqual(latestNote);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "2",
+    });
   });
 });

@@ -2,7 +2,7 @@ import { createApiClient } from "@markean/api-client";
 import { markdownToPlainText } from "@markean/domain";
 import type { FolderRecord, NoteRecord } from "@markean/domain";
 import { queueChange } from "@markean/sync-core";
-import { createWebDatabase } from "@markean/storage-web";
+import { createWebDatabase, type MarkeanWebDatabase } from "@markean/storage-web";
 import { getWelcomeNote } from "../components/shared/WelcomeNote";
 import { getAllFolders } from "../features/notes/persistence/folders.persistence";
 import { getDb, initDb } from "../features/notes/persistence/db";
@@ -35,6 +35,24 @@ type MigrationSelection = {
   activeFolderId: string;
   activeNoteId: string;
 };
+
+type BootstrapConcurrencyHooks = {
+  beforeMigrationWrite?: () => Promise<void> | void;
+  beforeWelcomeWrite?: () => Promise<void> | void;
+  beforeRemoteWrite?: () => Promise<void> | void;
+};
+
+let concurrencyHooks: BootstrapConcurrencyHooks = {};
+
+export function setBootstrapConcurrencyHooksForTests(hooks: BootstrapConcurrencyHooks): void {
+  concurrencyHooks = hooks;
+}
+
+class StaleBootstrapError extends Error {
+  constructor() {
+    super("Stale bootstrap run");
+  }
+}
 
 function isNonBlank(value: string): boolean {
   return value.trim().length > 0;
@@ -146,6 +164,28 @@ function removeLegacyDrafts(): void {
   }
 }
 
+async function queueCreateChangeOnce(
+  db: MarkeanWebDatabase,
+  entityType: "folder" | "note",
+  entityId: string,
+): Promise<void> {
+  const existing = await db.pendingChanges.where("entityId").equals(entityId).toArray();
+  if (
+    existing.some(
+      (change) => change.entityType === entityType && change.operation === "create",
+    )
+  ) {
+    return;
+  }
+
+  await queueChange(db, {
+    entityType,
+    entityId,
+    operation: "create",
+    baseRevision: 0,
+  });
+}
+
 async function migrateFromLocalStorageInternal(): Promise<MigrationSelection | null> {
   const db = getDb();
   const existingCount = (await db.notes.count()) + (await db.folders.count());
@@ -194,26 +234,25 @@ async function migrateFromLocalStorageInternal(): Promise<MigrationSelection | n
     };
   });
 
+  let didMigrate = false;
   await db.transaction("rw", db.folders, db.notes, db.pendingChanges, async () => {
+    await concurrencyHooks.beforeMigrationWrite?.();
+    const existingCountInTransaction =
+      (await db.notes.count()) + (await db.folders.count());
+    if (existingCountInTransaction > 0) return;
+
     await db.folders.bulkPut(folders);
     await db.notes.bulkPut(notes);
     for (const folder of folders) {
-      await queueChange(db, {
-        entityType: "folder",
-        entityId: folder.id,
-        operation: "create",
-        baseRevision: 0,
-      });
+      await queueCreateChangeOnce(db, "folder", folder.id);
     }
     for (const note of notes) {
-      await queueChange(db, {
-        entityType: "note",
-        entityId: note.id,
-        operation: "create",
-        baseRevision: 0,
-      });
+      await queueCreateChangeOnce(db, "note", note.id);
     }
+    didMigrate = true;
   });
+
+  if (!didMigrate) return null;
 
   removeLocalStorage(WORKSPACE_KEY);
   removeLegacyDrafts();
@@ -248,6 +287,11 @@ async function ensureWelcomeNote(): Promise<void> {
   const now = new Date().toISOString();
 
   await db.transaction("rw", db.folders, db.notes, db.pendingChanges, async () => {
+    await concurrencyHooks.beforeWelcomeWrite?.();
+    const existingCountInTransaction =
+      (await db.notes.count()) + (await db.folders.count());
+    if (existingCountInTransaction > 0) return;
+
     await db.folders.put({
       id: folderId,
       name: locale.startsWith("zh") ? "笔记" : "Notes",
@@ -256,12 +300,7 @@ async function ensureWelcomeNote(): Promise<void> {
       updatedAt: now,
       deletedAt: null,
     });
-    await queueChange(db, {
-      entityType: "folder",
-      entityId: folderId,
-      operation: "create",
-      baseRevision: 0,
-    });
+    await queueCreateChangeOnce(db, "folder", folderId);
 
     await db.notes.put({
       id: "welcome-note",
@@ -273,12 +312,7 @@ async function ensureWelcomeNote(): Promise<void> {
       updatedAt: now,
       deletedAt: null,
     });
-    await queueChange(db, {
-      entityType: "note",
-      entityId: "welcome-note",
-      operation: "create",
-      baseRevision: 0,
-    });
+    await queueCreateChangeOnce(db, "note", "welcome-note");
   });
 }
 
@@ -293,6 +327,7 @@ export function resetSchedulerForTests(): void {
   bootstrapGeneration += 1;
   scheduler?.stop();
   scheduler = null;
+  concurrencyHooks = {};
 }
 
 function restoreEditorSelection(
@@ -368,13 +403,18 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       : [];
 
     await db.transaction("rw", db.notes, db.folders, db.pendingChanges, db.syncState, async () => {
+      await concurrencyHooks.beforeRemoteWrite?.();
+      if (isStale()) throw new StaleBootstrapError();
+
       for (const note of serverNotes) {
         const pendingChanges = await db.pendingChanges.where("entityId").equals(note.id).toArray();
         if (pendingChanges.some((change) => change.entityType === "note")) continue;
 
         const local = await db.notes.get(note.id);
         if (!local || (note.currentRevision ?? 0) > (local.currentRevision ?? 0)) {
+          if (isStale()) throw new StaleBootstrapError();
           await db.notes.put(note);
+          if (isStale()) throw new StaleBootstrapError();
         }
       }
 
@@ -387,14 +427,18 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
 
         const local = await db.folders.get(folder.id);
         if (!local || (folder.currentRevision ?? 0) > (local.currentRevision ?? 0)) {
+          if (isStale()) throw new StaleBootstrapError();
           await db.folders.put(folder);
+          if (isStale()) throw new StaleBootstrapError();
         }
       }
 
+      if (isStale()) throw new StaleBootstrapError();
       await db.syncState.put({
         key: "syncCursor",
         value: String(bootstrap.syncCursor ?? 0),
       });
+      if (isStale()) throw new StaleBootstrapError();
     });
 
     const [freshNotes, freshFolders] = await Promise.all([getAllNotes(), getAllFolders()]);
@@ -405,7 +449,12 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
     }
     useNotesStore.getState().loadNotes(freshNotes);
     useFoldersStore.getState().loadFolders(freshFolders);
-  } catch {
+  } catch (error) {
+    if (error instanceof StaleBootstrapError) {
+      localScheduler.stop();
+      db.close();
+      return;
+    }
     // Local data is already loaded; remote bootstrap can recover on the scheduler.
   }
 
