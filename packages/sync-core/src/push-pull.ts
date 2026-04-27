@@ -54,6 +54,14 @@ type ApiClient = {
   }>;
 };
 
+type SyncApplyOptions = {
+  shouldApply?: () => boolean;
+};
+
+function shouldApply(options?: SyncApplyOptions): boolean {
+  return options?.shouldApply?.() ?? true;
+}
+
 export function queueChange(
   db: SyncableDatabase,
   input: Omit<PendingChange, "clientChangeId">,
@@ -66,6 +74,7 @@ export async function pushChanges(
   db: SyncableDatabase,
   apiClient: ApiClient,
   deviceId: string,
+  options: SyncApplyOptions = {},
 ): Promise<{ conflicts: Array<{ entityType: string; entityId: string; serverRevision: number }> }> {
   const pending = await db.pendingChanges.toArray();
   if (pending.length === 0) return { conflicts: [] };
@@ -99,11 +108,14 @@ export async function pushChanges(
   }
 
   const result = await apiClient.syncPush({ deviceId, changes });
+  if (!shouldApply(options)) return { conflicts: result.conflicts ?? [] };
+
   const acceptedChanges = pending.slice(0, result.accepted.length);
 
   for (const [index, accepted] of result.accepted.entries()) {
     const change = acceptedChanges[index];
     if (!change) continue;
+    if (!shouldApply(options)) return { conflicts: result.conflicts ?? [] };
 
     if (change.entityType === "note") {
       await db.notes.update(change.entityId, { currentRevision: accepted.acceptedRevision });
@@ -113,12 +125,14 @@ export async function pushChanges(
   }
 
   if (result.accepted.length > 0) {
+    if (!shouldApply(options)) return { conflicts: result.conflicts ?? [] };
     const acceptedIds = acceptedChanges.map((p) => p.clientChangeId);
     await db.pendingChanges.where("clientChangeId").anyOf(acceptedIds).delete();
   }
 
   const latestCursor = result.accepted.at(-1)?.cursor;
   if (latestCursor !== undefined) {
+    if (!shouldApply(options)) return { conflicts: result.conflicts ?? [] };
     await db.syncState.put({ key: "syncCursor", value: String(latestCursor) });
   }
 
@@ -129,14 +143,17 @@ export async function pullChanges(
   db: SyncableDatabase,
   apiClient: ApiClient,
   deviceId: string,
+  options: SyncApplyOptions = {},
 ): Promise<void> {
   const cursorRecord = await db.syncState.get("syncCursor");
   const cursor = cursorRecord ? Number(cursorRecord.value) : 0;
 
   const result = await apiClient.syncPull(cursor);
+  if (!shouldApply(options)) return;
 
   for (const event of result.events) {
     if (event.sourceDeviceId === deviceId) continue;
+    if (!shouldApply(options)) return;
 
     if (event.operation === "delete") {
       if (event.entityType === "note") {
@@ -150,6 +167,7 @@ export async function pullChanges(
     if (!event.entity) continue;
 
     if (event.entityType === "note") {
+      if (!shouldApply(options)) return;
       await db.notes.put({
         id: event.entity.id as string,
         folderId: event.entity.folderId as string,
@@ -161,6 +179,7 @@ export async function pullChanges(
         deletedAt: (event.entity.deletedAt as string) ?? null,
       });
     } else {
+      if (!shouldApply(options)) return;
       await db.folders.put({
         id: event.entity.id as string,
         name: event.entity.name as string,
@@ -172,6 +191,7 @@ export async function pullChanges(
     }
   }
 
+  if (!shouldApply(options)) return;
   await db.syncState.put({ key: "syncCursor", value: String(result.nextCursor) });
 }
 

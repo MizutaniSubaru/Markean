@@ -217,12 +217,12 @@ describe("sync.service", () => {
     });
     await cycle;
 
+    await expect(db.notes.get(pulledNote.id)).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toBeUndefined();
     expect(useNotesStore.getState().notes).toEqual([]);
     expect(useFoldersStore.getState().folders).toEqual([]);
-    expect(useSyncStore.getState()).toMatchObject({
-      status: "syncing",
-      lastSyncedAt: null,
-    });
+    expect(useSyncStore.getState().status).not.toBe("syncing");
+    expect(useSyncStore.getState().lastSyncedAt).toBeNull();
   });
 
   it("creates a conflict copy when sync returns a note conflict", async () => {

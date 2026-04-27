@@ -17,6 +17,10 @@ export function createSyncService(apiClient: ApiClient, options: SyncServiceOpti
   let inFlight: Promise<void> | null = null;
   const shouldApply = options.shouldApply ?? (() => true);
 
+  function markCancelled(): void {
+    useSyncStore.getState().markUnsynced();
+  }
+
   async function runCycle(): Promise<void> {
     if (!shouldApply()) return;
     useSyncStore.getState().markSyncing();
@@ -24,27 +28,45 @@ export function createSyncService(apiClient: ApiClient, options: SyncServiceOpti
     try {
       const db = getDb();
       const deviceId = await getDeviceId(db);
-      if (!shouldApply()) return;
+      if (!shouldApply()) {
+        markCancelled();
+        return;
+      }
 
-      const { conflicts } = await pushChanges(db, apiClient, deviceId);
-      if (!shouldApply()) return;
+      const { conflicts } = await pushChanges(db, apiClient, deviceId, { shouldApply });
+      if (!shouldApply()) {
+        markCancelled();
+        return;
+      }
 
       if (conflicts.length > 0) {
         await handleConflicts(conflicts);
-        if (!shouldApply()) return;
+        if (!shouldApply()) {
+          markCancelled();
+          return;
+        }
       }
 
-      await pullChanges(db, apiClient, deviceId);
-      if (!shouldApply()) return;
+      await pullChanges(db, apiClient, deviceId, { shouldApply });
+      if (!shouldApply()) {
+        markCancelled();
+        return;
+      }
 
       const [notes, folders] = await Promise.all([getAllNotes(), getAllFolders()]);
-      if (!shouldApply()) return;
+      if (!shouldApply()) {
+        markCancelled();
+        return;
+      }
 
       useNotesStore.getState().loadNotes(notes);
       useFoldersStore.getState().loadFolders(folders);
 
       const pendingChanges = await db.pendingChanges.toArray();
-      if (!shouldApply()) return;
+      if (!shouldApply()) {
+        markCancelled();
+        return;
+      }
 
       if (pendingChanges.length === 0) {
         useSyncStore.getState().markSynced();

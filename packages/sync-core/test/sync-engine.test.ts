@@ -1,8 +1,9 @@
 import "fake-indexeddb/auto";
 
+import type { FolderRecord, NoteRecord } from "@markean/domain";
 import { describe, expect, it } from "vitest";
 import { createWebDatabase } from "../../storage-web/src/index";
-import { getDeviceId, pushChanges, queueChange } from "../src/index";
+import { getDeviceId, pullChanges, pushChanges, queueChange } from "../src/index";
 
 describe("sync engine queue", () => {
   it("queues a pending change via the shared domain helper", async () => {
@@ -116,5 +117,87 @@ describe("sync engine queue", () => {
     expect(result.conflicts).toEqual([
       { entityType: "note", entityId: "note_conflict", serverRevision: 5 },
     ]);
+  });
+
+  it("does not apply accepted push changes when shouldApply becomes false", async () => {
+    const db = createWebDatabase(`test-markean-push-cancel-${crypto.randomUUID()}`);
+    const note: NoteRecord = {
+      id: "note_1",
+      folderId: "folder_1",
+      title: "Local title",
+      bodyMd: "Local body",
+      bodyPlain: "Local body",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await db.notes.put(note);
+    await queueChange(db, {
+      entityType: "note",
+      entityId: note.id,
+      operation: "update",
+      baseRevision: note.currentRevision,
+    });
+
+    let active = true;
+    const apiClient = {
+      async syncPush() {
+        active = false;
+        return {
+          accepted: [{ acceptedRevision: 2, cursor: 10 }],
+          conflicts: [],
+        };
+      },
+      async syncPull() {
+        throw new Error("syncPull should not be called");
+      },
+    };
+
+    await pushChanges(db, apiClient, "device_1", { shouldApply: () => active });
+
+    await expect(db.notes.get(note.id)).resolves.toEqual(note);
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(1);
+    await expect(db.syncState.get("syncCursor")).resolves.toBeUndefined();
+  });
+
+  it("does not apply pulled events when shouldApply becomes false", async () => {
+    const db = createWebDatabase(`test-markean-pull-cancel-${crypto.randomUUID()}`);
+    const pulledFolder: FolderRecord = {
+      id: "folder_pulled",
+      name: "Pulled",
+      sortOrder: 1,
+      currentRevision: 8,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+
+    let active = true;
+    const apiClient = {
+      async syncPush() {
+        throw new Error("syncPush should not be called");
+      },
+      async syncPull() {
+        active = false;
+        return {
+          nextCursor: 9,
+          events: [
+            {
+              cursor: 9,
+              entityType: "folder",
+              entityId: pulledFolder.id,
+              operation: "create",
+              revisionNumber: pulledFolder.currentRevision,
+              sourceDeviceId: "server_device",
+              entity: pulledFolder,
+            },
+          ],
+        };
+      },
+    };
+
+    await pullChanges(db, apiClient, "device_1", { shouldApply: () => active });
+
+    await expect(db.folders.get(pulledFolder.id)).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toBeUndefined();
   });
 });
