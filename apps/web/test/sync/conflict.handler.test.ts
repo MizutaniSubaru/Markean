@@ -260,6 +260,64 @@ describe("conflict.handler", () => {
     expect(changes.some((change) => change.entityId === "note_1")).toBe(false);
   });
 
+  it("skips conflict copy writes when shouldApply becomes false before mutation", async () => {
+    await db.notes.put(note1);
+    useNotesStore.getState().loadNotes([note1]);
+    await seedPendingNoteChange("note_1");
+    let checks = 0;
+
+    await handleConflicts(
+      [{ entityType: "note", entityId: "note_1", serverRevision: 5 }],
+      {
+        shouldApply: () => {
+          checks += 1;
+          return checks === 1;
+        },
+      },
+    );
+
+    expect(useNotesStore.getState().notes).toEqual([note1]);
+    await expect(db.notes.toArray()).resolves.toEqual([note1]);
+    await expect(db.pendingChanges.toArray()).resolves.toEqual([
+      {
+        clientChangeId: "chg_original_note_1",
+        entityType: "note",
+        entityId: "note_1",
+        operation: "update",
+        baseRevision: 1,
+      },
+    ]);
+  });
+
+  it("rolls back conflict copy writes when shouldApply becomes false during mutation", async () => {
+    await db.notes.put(note1);
+    useNotesStore.getState().loadNotes([note1]);
+    await seedPendingNoteChange("note_1");
+    let checks = 0;
+
+    await handleConflicts(
+      [{ entityType: "note", entityId: "note_1", serverRevision: 5 }],
+      {
+        shouldApply: () => {
+          checks += 1;
+          return checks < 5;
+        },
+      },
+    );
+
+    expect(useNotesStore.getState().notes).toEqual([note1]);
+    await expect(db.notes.toArray()).resolves.toEqual([note1]);
+    await expect(db.pendingChanges.toArray()).resolves.toEqual([
+      {
+        clientChangeId: "chg_original_note_1",
+        entityType: "note",
+        entityId: "note_1",
+        operation: "update",
+        baseRevision: 1,
+      },
+    ]);
+  });
+
   it("does not update the store or leave a copy when creating the copy fails", async () => {
     await db.notes.put(note1);
     useNotesStore.getState().loadNotes([note1]);

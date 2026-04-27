@@ -250,6 +250,27 @@ describe("sync.service", () => {
     });
   });
 
+  it("cancels without creating a device id when inactive before device id creation", async () => {
+    let active = true;
+    const apiClient = createMockApiClient();
+    const service = createSyncService(apiClient, {
+      shouldApply: () => {
+        const current = active;
+        active = false;
+        return current;
+      },
+    });
+
+    await service.executeSyncCycle();
+
+    expect(apiClient.syncPush).not.toHaveBeenCalled();
+    await expect(db.syncState.get("deviceId")).resolves.toBeUndefined();
+    expect(useSyncStore.getState()).toMatchObject({
+      status: "unsynced",
+      lastSyncedAt: null,
+    });
+  });
+
   it("creates a conflict copy when sync returns a note conflict", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));

@@ -27,8 +27,8 @@ export function createSyncService(apiClient: ApiClient, options: SyncServiceOpti
 
     try {
       const db = getDb();
-      const deviceId = await getDeviceId(db);
-      if (!shouldApply()) {
+      const deviceId = await getDeviceId(db, { shouldApply });
+      if (!deviceId || !shouldApply()) {
         markCancelled();
         return;
       }
@@ -40,7 +40,7 @@ export function createSyncService(apiClient: ApiClient, options: SyncServiceOpti
       }
 
       if (conflicts.length > 0) {
-        await handleConflicts(conflicts);
+        await handleConflicts(conflicts, { shouldApply });
         if (!shouldApply()) {
           markCancelled();
           return;

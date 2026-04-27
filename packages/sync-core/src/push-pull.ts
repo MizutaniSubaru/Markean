@@ -195,11 +195,21 @@ export async function pullChanges(
   await db.syncState.put({ key: "syncCursor", value: String(result.nextCursor) });
 }
 
-export async function getDeviceId(db: SyncableDatabase): Promise<string> {
+export function getDeviceId(db: SyncableDatabase): Promise<string>;
+export function getDeviceId(
+  db: SyncableDatabase,
+  options: SyncApplyOptions,
+): Promise<string | null>;
+export async function getDeviceId(
+  db: SyncableDatabase,
+  options: SyncApplyOptions = {},
+): Promise<string | null> {
   const existing = await db.syncState.get("deviceId");
   if (existing) return existing.value;
 
+  if (!shouldApply(options)) return null;
   const deviceId = `dev_${crypto.randomUUID()}`;
+  if (!shouldApply(options)) return null;
   await db.syncState.put({ key: "deviceId", value: deviceId });
   return deviceId;
 }
@@ -209,6 +219,7 @@ export async function runSyncCycle(
   apiClient: ApiClient,
 ): Promise<{ conflicts: Array<{ entityType: string; entityId: string; serverRevision: number }> }> {
   const deviceId = await getDeviceId(db);
+  if (!deviceId) return { conflicts: [] };
   const { conflicts } = await pushChanges(db, apiClient, deviceId);
   await pullChanges(db, apiClient, deviceId);
   return { conflicts };

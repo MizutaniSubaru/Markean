@@ -37,6 +37,15 @@ describe("sync engine queue", () => {
     expect(stored?.value).toBe(firstId);
   });
 
+  it("does not create a device id when shouldApply is false", async () => {
+    const db = createWebDatabase(`test-markean-device-id-cancel-${crypto.randomUUID()}`);
+
+    const deviceId = await getDeviceId(db, { shouldApply: () => false });
+
+    expect(deviceId).toBeNull();
+    await expect(db.syncState.get("deviceId")).resolves.toBeUndefined();
+  });
+
   it("reconciles the originating device with accepted server state after push", async () => {
     const db = createWebDatabase(`test-markean-push-reconcile-${crypto.randomUUID()}`);
 
