@@ -159,6 +159,20 @@ describe("migrateFromLocalStorage", () => {
     expect(storage.removeItem).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["null", null],
+    ["wrong shape", { folders: {}, notes: [] }],
+  ])("leaves valid JSON with invalid workspace shape untouched: %s", async (_name, payload) => {
+    const { storage, store } = installStorageMock();
+    store.set("markean:workspace", JSON.stringify(payload));
+
+    await migrateFromLocalStorage();
+
+    expect(await db.notes.toArray()).toEqual([]);
+    expect(await db.folders.toArray()).toEqual([]);
+    expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+
   it("skips migration when localStorage is unavailable", async () => {
     Object.defineProperty(window, "localStorage", {
       configurable: true,

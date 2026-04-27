@@ -76,6 +76,7 @@ export async function migrateFromLocalStorage(): Promise<void> {
     return;
   }
 
+  if (!workspace || typeof workspace !== "object") return;
   if (!Array.isArray(workspace.folders) || !Array.isArray(workspace.notes)) return;
 
   const now = new Date().toISOString();
