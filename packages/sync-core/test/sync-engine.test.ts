@@ -65,6 +65,61 @@ describe("sync engine queue", () => {
     await expect(db.syncState.get("deviceId")).resolves.toBeUndefined();
   });
 
+  it("does not delete a concurrent device id when stale rollback races with a current write", async () => {
+    const db = createWebDatabase(`test-markean-device-id-concurrent-cancel-${crypto.randomUUID()}`);
+    const originalGet = db.syncState.get.bind(db.syncState);
+    const originalPut = db.syncState.put.bind(db.syncState);
+    let active = true;
+    let staleDeviceId: string | null = null;
+    let resolveStalePut!: () => void;
+    const stalePut = new Promise<void>((resolve) => {
+      resolveStalePut = resolve;
+    });
+    let currentWrite: Promise<unknown> | null = null;
+    let scheduledCurrentWrite: ReturnType<typeof setTimeout> | null = null;
+
+    db.syncState.put = (async (value) => {
+      const result = await originalPut(value);
+      if (value.key === "deviceId" && value.value !== "dev_current") {
+        staleDeviceId = value.value;
+        active = false;
+        scheduledCurrentWrite = setTimeout(() => {
+          currentWrite ??= originalPut({ key: "deviceId", value: "dev_current" });
+        }, 0);
+        resolveStalePut();
+      }
+      return result;
+    }) as typeof db.syncState.put;
+    db.syncState.get = (async (key: string) => {
+      const result = await originalGet(key);
+      if (
+        key === "deviceId" &&
+        !active &&
+        result?.value === staleDeviceId &&
+        !currentWrite
+      ) {
+        if (scheduledCurrentWrite) {
+          clearTimeout(scheduledCurrentWrite);
+        }
+        currentWrite = originalPut({ key: "deviceId", value: "dev_current" });
+        await currentWrite;
+      }
+      return result;
+    }) as typeof db.syncState.get;
+
+    const staleDeviceIdResult = getDeviceId(db, { shouldApply: () => active });
+    await stalePut;
+    const deviceId = await staleDeviceIdResult;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await currentWrite;
+
+    expect(deviceId).toBeNull();
+    await expect(db.syncState.get("deviceId")).resolves.toEqual({
+      key: "deviceId",
+      value: "dev_current",
+    });
+  });
+
   it("reconciles the originating device with accepted server state after push", async () => {
     const db = createWebDatabase(`test-markean-push-reconcile-${crypto.randomUUID()}`);
 

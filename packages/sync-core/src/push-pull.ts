@@ -269,6 +269,32 @@ export async function getDeviceId(
   db: SyncableDatabase,
   options: SyncApplyOptions = {},
 ): Promise<string | null> {
+  if (hasTransaction(db)) {
+    let deviceId: string | null = null;
+    try {
+      await db.transaction("rw", db.syncState, async () => {
+        const existing = await db.syncState.get("deviceId");
+        if (existing) {
+          deviceId = existing.value;
+          return;
+        }
+
+        assertShouldApply(options);
+        const generatedDeviceId = `dev_${crypto.randomUUID()}`;
+        assertShouldApply(options);
+        await db.syncState.put({ key: "deviceId", value: generatedDeviceId });
+        assertShouldApply(options);
+        deviceId = generatedDeviceId;
+      });
+      return deviceId;
+    } catch (error) {
+      if (error instanceof StaleSyncApplicationError) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
   const existing = await db.syncState.get("deviceId");
   if (existing) return existing.value;
 
