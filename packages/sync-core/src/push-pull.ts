@@ -22,7 +22,7 @@ type SyncableDatabase = {
   syncState: {
     get(key: string): Promise<{ key: string; value: string } | undefined>;
     put(value: { key: string; value: string }): Promise<unknown>;
-    delete(key: string): Promise<unknown>;
+    delete?(key: string): Promise<unknown>;
   };
   transaction?: unknown;
 };
@@ -304,7 +304,7 @@ export async function getDeviceId(
   await db.syncState.put({ key: "deviceId", value: deviceId });
   if (!shouldApply(options)) {
     const stored = await db.syncState.get("deviceId");
-    if (stored?.value === deviceId) {
+    if (stored?.value === deviceId && db.syncState.delete) {
       await db.syncState.delete("deviceId");
     }
     return null;

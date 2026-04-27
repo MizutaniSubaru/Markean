@@ -17,45 +17,46 @@ export function createSyncService(apiClient: ApiClient, options: SyncServiceOpti
   let inFlight: Promise<void> | null = null;
   const shouldApply = options.shouldApply ?? (() => true);
 
-  function markCancelled(): void {
-    useSyncStore.getState().markUnsynced();
+  function markCancelled(runId: string): void {
+    useSyncStore.getState().markCancelled(runId);
   }
 
   async function runCycle(): Promise<void> {
     if (!shouldApply()) return;
-    useSyncStore.getState().markSyncing();
+    const runId = `sync_${crypto.randomUUID()}`;
+    useSyncStore.getState().markSyncing(runId);
 
     try {
       const db = getDb();
       const deviceId = await getDeviceId(db, { shouldApply });
       if (!deviceId || !shouldApply()) {
-        markCancelled();
+        markCancelled(runId);
         return;
       }
 
       const { conflicts } = await pushChanges(db, apiClient, deviceId, { shouldApply });
       if (!shouldApply()) {
-        markCancelled();
+        markCancelled(runId);
         return;
       }
 
       if (conflicts.length > 0) {
         await handleConflicts(conflicts, { shouldApply });
         if (!shouldApply()) {
-          markCancelled();
+          markCancelled(runId);
           return;
         }
       }
 
       await pullChanges(db, apiClient, deviceId, { shouldApply });
       if (!shouldApply()) {
-        markCancelled();
+        markCancelled(runId);
         return;
       }
 
       const [notes, folders] = await Promise.all([getAllNotes(), getAllFolders()]);
       if (!shouldApply()) {
-        markCancelled();
+        markCancelled(runId);
         return;
       }
 
@@ -64,7 +65,7 @@ export function createSyncService(apiClient: ApiClient, options: SyncServiceOpti
 
       const pendingChanges = await db.pendingChanges.toArray();
       if (!shouldApply()) {
-        markCancelled();
+        markCancelled(runId);
         return;
       }
 
@@ -77,7 +78,7 @@ export function createSyncService(apiClient: ApiClient, options: SyncServiceOpti
       if (shouldApply()) {
         useSyncStore.getState().markError();
       } else {
-        markCancelled();
+        markCancelled(runId);
       }
     }
   }

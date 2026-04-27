@@ -79,6 +79,7 @@ function resetStores(): void {
     status: "idle",
     isOnline: true,
     lastSyncedAt: null,
+    activeRunId: null,
   });
 }
 
@@ -247,6 +248,36 @@ describe("sync.service", () => {
     expect(useSyncStore.getState()).toMatchObject({
       status: "unsynced",
       lastSyncedAt: null,
+    });
+  });
+
+  it("does not overwrite newer sync status when a stale sync is cancelled", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    const pullResult = createDeferred<{
+      nextCursor: number;
+      events: [];
+    }>();
+    let active = true;
+    const apiClient = createMockApiClient();
+    apiClient.syncPull.mockReturnValue(pullResult.promise);
+    const service = createSyncService(apiClient, {
+      shouldApply: () => active,
+    });
+
+    const cycle = service.executeSyncCycle();
+    await vi.waitFor(() => expect(apiClient.syncPull).toHaveBeenCalledTimes(1));
+    expect(useSyncStore.getState().status).toBe("syncing");
+
+    active = false;
+    useSyncStore.getState().markSynced();
+    const newerSyncState = useSyncStore.getState();
+    pullResult.resolve({ nextCursor: 2, events: [] });
+    await cycle;
+
+    expect(useSyncStore.getState()).toMatchObject({
+      status: newerSyncState.status,
+      lastSyncedAt: newerSyncState.lastSyncedAt,
     });
   });
 

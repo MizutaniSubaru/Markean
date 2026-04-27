@@ -1,11 +1,75 @@
 import "fake-indexeddb/auto";
 
-import type { FolderRecord, NoteRecord } from "@markean/domain";
+import type { FolderRecord, NoteRecord, PendingChange } from "@markean/domain";
 import { describe, expect, it } from "vitest";
 import { createWebDatabase } from "../../storage-web/src/index";
 import { getDeviceId, pullChanges, pushChanges, queueChange } from "../src/index";
 
 describe("sync engine queue", () => {
+  it("accepts structural databases without syncState delete for queueing changes", async () => {
+    const pendingChanges: PendingChange[] = [];
+    const structuralDb = {
+      pendingChanges: {
+        async toArray() {
+          return pendingChanges;
+        },
+        where() {
+          return {
+            anyOf() {
+              return {
+                async delete() {
+                  return 0;
+                },
+              };
+            },
+          };
+        },
+        async put(value: PendingChange) {
+          pendingChanges.push(value);
+        },
+      },
+      notes: {
+        async get() {
+          return undefined;
+        },
+        async put() {
+          return undefined;
+        },
+        async update() {
+          return 0;
+        },
+      },
+      folders: {
+        async get() {
+          return undefined;
+        },
+        async put() {
+          return undefined;
+        },
+        async update() {
+          return 0;
+        },
+      },
+      syncState: {
+        async get() {
+          return undefined;
+        },
+        async put() {
+          return undefined;
+        },
+      },
+    } satisfies Parameters<typeof queueChange>[0];
+
+    await queueChange(structuralDb, {
+      entityType: "note",
+      entityId: "note_1",
+      operation: "update",
+      baseRevision: 1,
+    });
+
+    expect(pendingChanges).toHaveLength(1);
+  });
+
   it("queues a pending change via the shared domain helper", async () => {
     const db = createWebDatabase("test-markean-sync");
 
