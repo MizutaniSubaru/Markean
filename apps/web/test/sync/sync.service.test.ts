@@ -336,6 +336,34 @@ describe("sync.service", () => {
     });
   });
 
+  it("preserves lastSyncedAt when pending changes remain after sync", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    useSyncStore.setState({
+      status: "idle",
+      isOnline: true,
+      lastSyncedAt: "2026-04-20T00:00:00.000Z",
+    });
+    await db.notes.put(localNote);
+    await queueChange(db, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "update",
+      baseRevision: localNote.currentRevision,
+    });
+    const apiClient = createMockApiClient();
+    apiClient.syncPush.mockResolvedValue({ accepted: [], conflicts: [] });
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(1);
+    expect(useSyncStore.getState()).toMatchObject({
+      status: "unsynced",
+      lastSyncedAt: "2026-04-20T00:00:00.000Z",
+    });
+  });
+
   it("pushes pending changes before pulling", async () => {
     await db.folders.put(localFolder);
     await db.notes.put(localNote);
@@ -408,6 +436,36 @@ describe("sync.service", () => {
 
     expect(apiClient.syncPush).toHaveBeenCalledTimes(1);
     expect(apiClient.syncPull).toHaveBeenCalledTimes(1);
+    expect(useSyncStore.getState().status).toBe("idle");
+  });
+
+  it("resets the in-flight guard after a failed sync cycle", async () => {
+    await db.notes.put(localNote);
+    await queueChange(db, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "update",
+      baseRevision: localNote.currentRevision,
+    });
+    const apiClient = createMockApiClient();
+    apiClient.syncPush
+      .mockResolvedValueOnce({ accepted: [], conflicts: [] })
+      .mockResolvedValueOnce({
+        accepted: [{ acceptedRevision: 2, cursor: 2 }],
+        conflicts: [],
+      });
+    apiClient.syncPull.mockRejectedValueOnce(new Error("network failed"));
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    expect(useSyncStore.getState().status).toBe("error");
+    apiClient.syncPull.mockResolvedValueOnce({ nextCursor: 2, events: [] });
+
+    await service.executeSyncCycle();
+
+    expect(apiClient.syncPush).toHaveBeenCalledTimes(2);
+    expect(apiClient.syncPull).toHaveBeenCalledTimes(2);
     expect(useSyncStore.getState().status).toBe("idle");
   });
 });
