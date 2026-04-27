@@ -186,7 +186,29 @@ describe("conflict.handler", () => {
   it("removes original pending note changes after creating a conflict copy", async () => {
     await db.notes.put(note1);
     useNotesStore.getState().loadNotes([note1]);
-    await seedPendingNoteChange("note_1");
+    await db.pendingChanges.bulkPut([
+      {
+        clientChangeId: "chg_original_note_1_a",
+        entityType: "note",
+        entityId: "note_1",
+        operation: "update",
+        baseRevision: 1,
+      },
+      {
+        clientChangeId: "chg_original_note_1_b",
+        entityType: "note",
+        entityId: "note_1",
+        operation: "update",
+        baseRevision: 2,
+      },
+      {
+        clientChangeId: "chg_original_folder_same_id",
+        entityType: "folder",
+        entityId: "note_1",
+        operation: "update",
+        baseRevision: 1,
+      },
+    ]);
 
     await handleConflicts([
       { entityType: "note", entityId: "note_1", serverRevision: 5 },
@@ -195,9 +217,22 @@ describe("conflict.handler", () => {
     const copy = useNotesStore.getState().notes.find((n) => n.id !== "note_1");
     expect(copy).toBeDefined();
 
-    const changes = await db.pendingChanges.toArray();
-    expect(changes).toHaveLength(1);
-    expect(changes[0]).toMatchObject({
+    const changes = await db.pendingChanges.orderBy("clientChangeId").toArray();
+    expect(changes).toHaveLength(2);
+    expect(changes).toContainEqual({
+      clientChangeId: "chg_original_folder_same_id",
+      entityType: "folder",
+      entityId: "note_1",
+      operation: "update",
+      baseRevision: 1,
+    });
+    expect(changes.some((change) => change.clientChangeId === "chg_original_note_1_a")).toBe(
+      false,
+    );
+    expect(changes.some((change) => change.clientChangeId === "chg_original_note_1_b")).toBe(
+      false,
+    );
+    expect(changes.find((change) => change.entityId === copy!.id)).toMatchObject({
       entityType: "note",
       entityId: copy!.id,
       operation: "create",

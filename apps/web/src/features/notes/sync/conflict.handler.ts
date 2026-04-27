@@ -22,11 +22,6 @@ export async function handleConflicts(conflicts: Conflict[]): Promise<void> {
     const localNote = await db.notes.get(conflict.entityId);
     if (!localNote) continue;
 
-    const originalChanges = await db.pendingChanges
-      .where("entityId")
-      .equals(conflict.entityId)
-      .filter((change) => change.entityType === "note")
-      .toArray();
     const copyTitle = `${localNote.title} (conflict copy)`;
 
     const copy: NoteRecord = {
@@ -39,6 +34,12 @@ export async function handleConflicts(conflicts: Conflict[]): Promise<void> {
     };
 
     await db.transaction("rw", db.notes, db.pendingChanges, async () => {
+      const originalChanges = await db.pendingChanges
+        .where("entityId")
+        .equals(conflict.entityId)
+        .filter((change) => change.entityType === "note")
+        .toArray();
+
       await db.notes.put(copy);
       await queueChange(db, {
         entityType: "note",
