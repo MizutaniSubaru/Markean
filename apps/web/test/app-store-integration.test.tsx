@@ -102,6 +102,16 @@ function resetStores(): void {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("App store integration", () => {
   beforeEach(() => {
     mockMatchMedia(false);
@@ -147,6 +157,67 @@ describe("App store integration", () => {
       activeFolderId: "folder_notes",
       activeNoteId: "note_existing",
       newNoteId: null,
+    });
+    expect(useSyncStore.getState().status).toBe("idle");
+    expect(schedulerState.scheduler?.requestSync).not.toHaveBeenCalled();
+  });
+
+  it("preserves a newer note selection when optimistic note create later rejects", async () => {
+    const firstNote = note({
+      id: "note_first",
+      folderId: "folder_notes",
+      title: "First note",
+      bodyMd: "# First note",
+      updatedAt: "2026-04-27T12:00:00.000Z",
+    });
+    const secondNote = note({
+      id: "note_second",
+      folderId: "folder_notes",
+      title: "Second note",
+      bodyMd: "# Second note",
+      updatedAt: "2026-04-27T13:00:00.000Z",
+    });
+    const createNotePersistence = deferred<void>();
+    useFoldersStore.getState().loadFolders([folder({ id: "folder_notes", name: "Notes" })]);
+    useNotesStore.getState().loadNotes([secondNote, firstNote]);
+    useEditorStore.setState({
+      activeFolderId: "folder_notes",
+      activeNoteId: "note_first",
+      searchQuery: "",
+      mobileView: "editor",
+      newNoteId: null,
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    persistence.createNote.mockReturnValueOnce(createNotePersistence.promise);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "New Note" }));
+
+    const optimisticNoteId = useEditorStore.getState().activeNoteId;
+    expect(optimisticNoteId).not.toBe("note_first");
+    expect(optimisticNoteId).not.toBe("note_second");
+
+    fireEvent.click(screen.getByRole("button", { name: /second note/i }));
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: "folder_notes",
+      activeNoteId: "note_second",
+      mobileView: "editor",
+      newNoteId: optimisticNoteId,
+    });
+
+    createNotePersistence.reject(new Error("note write failed"));
+
+    await waitFor(() => {
+      expect(useNotesStore.getState().notes.map((existing) => existing.id)).toEqual([
+        "note_second",
+        "note_first",
+      ]);
+      expect(useEditorStore.getState()).toMatchObject({
+        activeFolderId: "folder_notes",
+        activeNoteId: "note_second",
+        mobileView: "editor",
+        newNoteId: null,
+      });
     });
     expect(useSyncStore.getState().status).toBe("idle");
     expect(schedulerState.scheduler?.requestSync).not.toHaveBeenCalled();

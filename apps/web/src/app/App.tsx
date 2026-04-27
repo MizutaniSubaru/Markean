@@ -174,17 +174,19 @@ function AppShell() {
         useNotesStore.setState((state) => ({
           notes: state.notes.filter((existing) => existing.id !== note.id),
         }));
-        useEditorStore.setState((state) =>
-          state.activeNoteId === note.id || state.newNoteId === note.id
-            ? {
-                activeFolderId: previousEditorState.activeFolderId,
-                activeNoteId: previousEditorState.activeNoteId,
-                searchQuery: previousEditorState.searchQuery,
-                mobileView: previousEditorState.mobileView,
-                newNoteId: previousEditorState.newNoteId,
-              }
-            : state,
-        );
+        useEditorStore.setState((state) => {
+          if (state.activeNoteId === note.id) {
+            return {
+              activeFolderId: previousEditorState.activeFolderId,
+              activeNoteId: previousEditorState.activeNoteId,
+              searchQuery: previousEditorState.searchQuery,
+              mobileView: previousEditorState.mobileView,
+              newNoteId: previousEditorState.newNoteId,
+            };
+          }
+
+          return state.newNoteId === note.id ? { newNoteId: null } : state;
+        });
       },
     );
   };
