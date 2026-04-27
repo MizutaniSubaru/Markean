@@ -107,6 +107,33 @@ describe("useNoteList", () => {
     expect(result.notesInScope.every((item) => !("folderName" in item))).toBe(true);
   });
 
+  it("falls back to the first active folder when activeFolderId points to a missing folder", () => {
+    loadFixture();
+    useEditorStore.setState({ activeFolderId: "missing_folder", searchQuery: "" });
+
+    const result = deriveNoteList("en");
+
+    expect(result.notesInScope.map((item) => item.id)).toEqual(["newer_work", "older_work"]);
+  });
+
+  it("falls back to the first active folder when activeFolderId points to a deleted folder", () => {
+    loadFixture();
+    useFoldersStore.getState().loadFolders([
+      folder({
+        id: "folder_deleted",
+        name: "Deleted",
+        deletedAt: "2026-04-27T12:00:00.000Z",
+      }),
+      folder({ id: "folder_work", name: "Work" }),
+      folder({ id: "folder_home", name: "Home" }),
+    ]);
+    useEditorStore.setState({ activeFolderId: "folder_deleted", searchQuery: "" });
+
+    const result = deriveNoteList("en");
+
+    expect(result.notesInScope.map((item) => item.id)).toEqual(["newer_work", "older_work"]);
+  });
+
   it("returns NoteRecord objects in notesInScope while sections contain display items", () => {
     loadFixture();
 

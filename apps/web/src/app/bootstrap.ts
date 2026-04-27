@@ -47,6 +47,10 @@ type BootstrapApplyOptions = {
   shouldApply?: () => boolean;
 };
 
+type BootstrapAppOptions = {
+  onLocalReady?: () => void;
+};
+
 let concurrencyHooks: BootstrapConcurrencyHooks = {};
 
 export function setBootstrapConcurrencyHooksForTests(hooks: BootstrapConcurrencyHooks): void {
@@ -512,7 +516,10 @@ function revalidateEditorSelection(
   useEditorStore.getState().selectNote(firstNoteInSelectedFolder?.id ?? "");
 }
 
-export async function bootstrapApp(baseUrl = ""): Promise<void> {
+export async function bootstrapApp(
+  baseUrl = "",
+  options: BootstrapAppOptions = {},
+): Promise<void> {
   const generation = bootstrapGeneration + 1;
   bootstrapGeneration = generation;
   scheduler?.stop();
@@ -566,6 +573,8 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
     shouldApply: () => !isStale(),
   });
   const localScheduler = createSyncScheduler(syncService.executeSyncCycle);
+  scheduler = localScheduler;
+  options.onLocalReady?.();
 
   try {
     const bootstrapRequestStartCursor = parseStoredSyncCursor(

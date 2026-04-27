@@ -932,6 +932,26 @@ describe("bootstrapApp", () => {
     );
   });
 
+  it("notifies local readiness after local store hydration when remote bootstrap never resolves", async () => {
+    installStorageMock();
+    const onLocalReady = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise(() => {})),
+    );
+
+    void bootstrapApp("https://example.test", { onLocalReady });
+
+    await waitForCondition(() => onLocalReady.mock.calls.length === 1);
+
+    expect(useFoldersStore.getState().folders.map((folder) => folder.id)).toEqual(["notes"]);
+    expect(useNotesStore.getState().notes.map((note) => note.id)).toEqual(["welcome-note"]);
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: "notes",
+      activeNoteId: "welcome-note",
+    });
+  });
+
   it("does not duplicate welcome pending create changes during overlapping bootstraps", async () => {
     installStorageMock();
     const fetch = vi.fn().mockRejectedValue(new Error("offline"));

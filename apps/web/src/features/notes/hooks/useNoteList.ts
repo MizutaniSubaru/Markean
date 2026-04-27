@@ -89,9 +89,12 @@ function toNoteItem(
 
 export function deriveNoteList(locale: string, t?: NoteListTranslator): NoteListResult {
   const notes = useNotesStore.getState().notes.filter((note) => note.deletedAt === null);
-  const folders = useFoldersStore.getState().folders;
+  const folders = useFoldersStore.getState().folders.filter((folder) => folder.deletedAt === null);
   const { activeFolderId, searchQuery } = useEditorStore.getState();
   const folderNameById = new Map(folders.map((folder) => [folder.id, folder.name]));
+  const effectiveActiveFolderId = folders.some((folder) => folder.id === activeFolderId)
+    ? activeFolderId
+    : folders[0]?.id ?? "";
   const query = searchQuery.trim().toLowerCase();
   const notesInScope = (query
     ? notes.filter((note) => {
@@ -104,7 +107,7 @@ export function deriveNoteList(locale: string, t?: NoteListTranslator): NoteList
           .toLowerCase();
         return haystack.includes(query);
       })
-    : notes.filter((note) => note.folderId === activeFolderId)
+    : notes.filter((note) => note.folderId === effectiveActiveFolderId)
   ).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 
   const grouped = new Map<string, NoteItem[]>();

@@ -29,6 +29,7 @@ function isActiveNote(note: NoteRecord): boolean {
 function persistCreatedEntity(
   persist: () => Promise<void>,
   errorMessage: string,
+  rollback: () => void,
 ): void {
   void persist()
     .then(() => {
@@ -36,6 +37,7 @@ function persistCreatedEntity(
       getScheduler()?.requestSync();
     })
     .catch((error) => {
+      rollback();
       console.error(errorMessage, error);
     });
 }
@@ -119,6 +121,7 @@ function AppShell() {
     const name = window.prompt(defaultName, defaultName)?.trim();
     if (!name) return;
 
+    const previousEditorState = useEditorStore.getState();
     const folder = addFolder(name);
     useEditorStore.setState({
       activeFolderId: folder.id,
@@ -129,6 +132,22 @@ function AppShell() {
     persistCreatedEntity(
       () => persistFolderCreate(folder),
       "Failed to persist created folder",
+      () => {
+        useFoldersStore.setState((state) => ({
+          folders: state.folders.filter((existing) => existing.id !== folder.id),
+        }));
+        useEditorStore.setState((state) =>
+          state.activeFolderId === folder.id
+            ? {
+                activeFolderId: previousEditorState.activeFolderId,
+                activeNoteId: previousEditorState.activeNoteId,
+                searchQuery: previousEditorState.searchQuery,
+                mobileView: previousEditorState.mobileView,
+                newNoteId: previousEditorState.newNoteId,
+              }
+            : state,
+        );
+      },
     );
   };
 
@@ -139,6 +158,7 @@ function AppShell() {
         : activeFolder?.id ?? activeFolderId ?? activeFolders[0]?.id;
     if (!folderId) return;
 
+    const previousEditorState = useEditorStore.getState();
     const note = addNote(folderId);
     useEditorStore.setState({
       activeFolderId: folderId,
@@ -147,7 +167,26 @@ function AppShell() {
       mobileView: "editor",
       newNoteId: note.id,
     });
-    persistCreatedEntity(() => persistNoteCreate(note), "Failed to persist created note");
+    persistCreatedEntity(
+      () => persistNoteCreate(note),
+      "Failed to persist created note",
+      () => {
+        useNotesStore.setState((state) => ({
+          notes: state.notes.filter((existing) => existing.id !== note.id),
+        }));
+        useEditorStore.setState((state) =>
+          state.activeNoteId === note.id || state.newNoteId === note.id
+            ? {
+                activeFolderId: previousEditorState.activeFolderId,
+                activeNoteId: previousEditorState.activeNoteId,
+                searchQuery: previousEditorState.searchQuery,
+                mobileView: previousEditorState.mobileView,
+                newNoteId: previousEditorState.newNoteId,
+              }
+            : state,
+        );
+      },
+    );
   };
 
   const changeBody = (bodyMd: string) => {

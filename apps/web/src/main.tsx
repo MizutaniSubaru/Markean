@@ -14,8 +14,12 @@ if (!rootElement) {
 }
 
 const root = createRoot(rootElement);
+let didRender = false;
 
 function render() {
+  if (didRender) return;
+  didRender = true;
+
   root.render(
     <StrictMode>
       <App />
@@ -23,7 +27,7 @@ function render() {
   );
 }
 
-bootstrapApp()
+bootstrapApp("", { onLocalReady: render })
   .then(render)
   .catch((error) => {
     console.error(error);
