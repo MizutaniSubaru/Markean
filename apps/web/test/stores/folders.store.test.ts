@@ -35,6 +35,15 @@ describe("folders.store", () => {
     expect(useFoldersStore.getState().folders).toEqual([folder1]);
   });
 
+  it("isolates loaded folders from source array mutation", () => {
+    const sourceFolders = [folder1];
+
+    useFoldersStore.getState().loadFolders(sourceFolders);
+    sourceFolders.push(folder2);
+
+    expect(useFoldersStore.getState().folders).toEqual([folder1]);
+  });
+
   it("adds a folder optimistically", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));

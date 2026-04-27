@@ -15,7 +15,7 @@ function createId() {
 export const useFoldersStore = create<FoldersState>((set, get) => ({
   folders: [],
 
-  loadFolders: (folders) => set({ folders }),
+  loadFolders: (folders) => set({ folders: [...folders] }),
 
   addFolder: (name) => {
     const folder: FolderRecord = {
