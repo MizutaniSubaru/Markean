@@ -32,6 +32,16 @@ const note2: NoteRecord = {
 describe("conflict.handler", () => {
   let db: MarkeanWebDatabase;
 
+  async function seedPendingNoteChange(entityId: string): Promise<void> {
+    await db.pendingChanges.put({
+      clientChangeId: `chg_original_${entityId}`,
+      entityType: "note",
+      entityId,
+      operation: "update",
+      baseRevision: 1,
+    });
+  }
+
   beforeEach(() => {
     db = createWebDatabase(`test-conflict-${crypto.randomUUID()}`);
     resetDbForTests();
@@ -50,6 +60,7 @@ describe("conflict.handler", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
     await db.notes.put(note1);
+    await seedPendingNoteChange("note_1");
     useNotesStore.getState().loadNotes([note1]);
 
     await handleConflicts([
@@ -109,6 +120,8 @@ describe("conflict.handler", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
     await db.notes.bulkPut([note1, note2]);
+    await seedPendingNoteChange("note_1");
+    await seedPendingNoteChange("note_2");
     useNotesStore.getState().loadNotes([note1, note2]);
 
     await handleConflicts([
@@ -148,6 +161,7 @@ describe("conflict.handler", () => {
 
   it("deduplicates duplicate note conflicts", async () => {
     await db.notes.put(note1);
+    await seedPendingNoteChange("note_1");
     useNotesStore.getState().loadNotes([note1]);
 
     await handleConflicts([
@@ -170,9 +184,54 @@ describe("conflict.handler", () => {
     });
   });
 
+  it("removes original pending note changes after creating a conflict copy", async () => {
+    await db.notes.put(note1);
+    useNotesStore.getState().loadNotes([note1]);
+    await seedPendingNoteChange("note_1");
+
+    await handleConflicts([
+      { entityType: "note", entityId: "note_1", serverRevision: 5 },
+    ]);
+
+    const copy = useNotesStore.getState().notes.find((n) => n.id !== "note_1");
+    expect(copy).toBeDefined();
+
+    const changes = await db.pendingChanges.toArray();
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({
+      entityType: "note",
+      entityId: copy!.id,
+      operation: "create",
+      baseRevision: 0,
+    });
+  });
+
+  it("does not create another copy on a later retry after resolving the original pending change", async () => {
+    await db.notes.put(note1);
+    useNotesStore.getState().loadNotes([note1]);
+    await seedPendingNoteChange("note_1");
+
+    await handleConflicts([
+      { entityType: "note", entityId: "note_1", serverRevision: 5 },
+    ]);
+    await handleConflicts([
+      { entityType: "note", entityId: "note_1", serverRevision: 5 },
+    ]);
+
+    const storeNotes = useNotesStore.getState().notes;
+    const copies = storeNotes.filter((n) => n.id !== "note_1");
+    expect(storeNotes).toHaveLength(2);
+    expect(copies).toHaveLength(1);
+
+    const changes = await db.pendingChanges.toArray();
+    expect(changes).toHaveLength(1);
+    expect(changes[0].entityId).toBe(copies[0].id);
+  });
+
   it("does not update the store or leave a copy when creating the copy fails", async () => {
     await db.notes.put(note1);
     useNotesStore.getState().loadNotes([note1]);
+    await seedPendingNoteChange("note_1");
     db.pendingChanges.hook("creating", () => {
       throw new Error("pending change failed");
     });
@@ -184,6 +243,14 @@ describe("conflict.handler", () => {
     expect(useNotesStore.getState().notes).toEqual([note1]);
     await expect(db.notes.get("note_1")).resolves.toEqual(note1);
     await expect(db.notes.toArray()).resolves.toEqual([note1]);
-    await expect(db.pendingChanges.toArray()).resolves.toEqual([]);
+    await expect(db.pendingChanges.toArray()).resolves.toEqual([
+      {
+        clientChangeId: "chg_original_note_1",
+        entityType: "note",
+        entityId: "note_1",
+        operation: "update",
+        baseRevision: 1,
+      },
+    ]);
   });
 });

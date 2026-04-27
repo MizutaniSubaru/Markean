@@ -22,6 +22,13 @@ export async function handleConflicts(conflicts: Conflict[]): Promise<void> {
     const localNote = await db.notes.get(conflict.entityId);
     if (!localNote) continue;
 
+    const originalChanges = await db.pendingChanges
+      .where("entityId")
+      .equals(conflict.entityId)
+      .filter((change) => change.entityType === "note")
+      .toArray();
+    if (originalChanges.length === 0) continue;
+
     const copy: NoteRecord = {
       ...localNote,
       id: `note_${crypto.randomUUID()}`,
@@ -32,6 +39,10 @@ export async function handleConflicts(conflicts: Conflict[]): Promise<void> {
     };
 
     await createNote(copy);
+    await db.pendingChanges
+      .where("clientChangeId")
+      .anyOf(originalChanges.map((change) => change.clientChangeId))
+      .delete();
     useNotesStore.getState().addConflictCopy(copy);
   }
 }
