@@ -1,8 +1,12 @@
 import React from "react";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import type { FolderRecord, NoteRecord } from "@markean/domain";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deriveNoteList, useNoteList } from "../../src/features/notes/hooks/useNoteList";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import {
+  deriveNoteList,
+  type NoteListResult,
+  useNoteList,
+} from "../../src/features/notes/hooks/useNoteList";
 import { useEditorStore } from "../../src/features/notes/store/editor.store";
 import { useFoldersStore } from "../../src/features/notes/store/folders.store";
 import { useNotesStore } from "../../src/features/notes/store/notes.store";
@@ -100,7 +104,33 @@ describe("useNoteList", () => {
     const result = deriveNoteList("en");
 
     expect(result.notesInScope.map((item) => item.id)).toEqual(["newer_work", "older_work"]);
-    expect(result.notesInScope.every((item) => item.folderName === undefined)).toBe(true);
+    expect(result.notesInScope.every((item) => !("folderName" in item))).toBe(true);
+  });
+
+  it("returns NoteRecord objects in notesInScope while sections contain display items", () => {
+    loadFixture();
+
+    const result = deriveNoteList("en");
+
+    expectTypeOf<NoteListResult["notesInScope"]>().toEqualTypeOf<NoteRecord[]>();
+    expect(result.notesInScope[0]).toMatchObject({
+      id: "newer_work",
+      folderId: "folder_work",
+      title: "Newer Work",
+      bodyMd: "latest work note",
+      bodyPlain: "",
+      currentRevision: 1,
+      updatedAt: "2026-04-27T12:00:00.000Z",
+      deletedAt: null,
+    });
+    expect(result.notesInScope[0]).not.toHaveProperty("preview");
+    expect(result.notesInScope[0]).not.toHaveProperty("date");
+    expect(result.sections[0].items[0]).toMatchObject({
+      id: "newer_work",
+      title: "Newer Work",
+      preview: "latest work note",
+      date: "Apr 27",
+    });
   });
 
   it("searches active notes across title, body, and folder name", () => {
@@ -171,7 +201,10 @@ describe("useNoteList", () => {
     ]);
     useEditorStore.setState({ activeFolderId: "folder_work", searchQuery: "" });
 
-    expect(deriveNoteList("en").notesInScope.map((item) => item.title)).toEqual([
+    const result = deriveNoteList("en");
+
+    expect(result.notesInScope.map((item) => item.title)).toEqual(["   ", ""]);
+    expect(result.sections.flatMap((section) => section.items.map((item) => item.title))).toEqual([
       "Body Heading",
       "Untitled",
     ]);
@@ -183,7 +216,7 @@ describe("useNoteList", () => {
     useNotesStore.getState().loadNotes([note({ id: "preview", folderId: "folder_work", bodyMd: longBody })]);
     useEditorStore.setState({ activeFolderId: "folder_work", searchQuery: "" });
 
-    const [{ preview }] = deriveNoteList("en").notesInScope;
+    const [{ preview }] = deriveNoteList("en").sections[0].items;
 
     expect(preview.startsWith("Heading word word")).toBe(true);
     expect(preview).not.toContain("#");
@@ -195,11 +228,11 @@ describe("useNoteList", () => {
   it("includes folderName only in search mode", () => {
     loadFixture();
 
-    expect(deriveNoteList("en").notesInScope[0]).not.toHaveProperty("folderName");
+    expect(deriveNoteList("en").sections[0].items[0]).not.toHaveProperty("folderName");
 
     useEditorStore.getState().setSearchQuery("work");
 
-    expect(deriveNoteList("en").notesInScope[0]).toHaveProperty("folderName", "Work");
+    expect(deriveNoteList("en").sections[0].items[0]).toHaveProperty("folderName", "Work");
   });
 
   it("formats zh locale dates through zh-CN", () => {
@@ -209,7 +242,7 @@ describe("useNoteList", () => {
     ]);
     useEditorStore.setState({ activeFolderId: "folder_work", searchQuery: "" });
 
-    const [{ date }] = deriveNoteList("zh").notesInScope;
+    const [{ date }] = deriveNoteList("zh").sections[0].items;
 
     expect(date).toContain("4");
     expect(date).toContain("27");

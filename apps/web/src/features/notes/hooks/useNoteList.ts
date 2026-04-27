@@ -22,7 +22,7 @@ export type NoteSection = {
 };
 
 export type NoteListResult = {
-  notesInScope: NoteItem[];
+  notesInScope: NoteRecord[];
   sections: NoteSection[];
 };
 
@@ -105,15 +105,12 @@ export function deriveNoteList(locale: string, t?: NoteListTranslator): NoteList
         return haystack.includes(query);
       })
     : notes.filter((note) => note.folderId === activeFolderId)
-  )
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .map((note) => toNoteItem(note, locale, folderNameById, query.length > 0));
+  ).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 
   const grouped = new Map<string, NoteItem[]>();
-  for (const item of notesInScope) {
-    const note = notes.find((candidate) => candidate.id === item.id);
-    if (!note) continue;
+  for (const note of notesInScope) {
     const label = groupLabel(note.updatedAt, t);
+    const item = toNoteItem(note, locale, folderNameById, query.length > 0);
     grouped.set(label, [...(grouped.get(label) ?? []), item]);
   }
 
