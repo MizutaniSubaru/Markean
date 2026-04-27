@@ -156,6 +156,37 @@ describe("migrateFromLocalStorage", () => {
     expect(Array.from(store.keys()).some((key) => key.startsWith("markean:draft:"))).toBe(false);
   });
 
+  it("migrates legacy notes without updatedAt using the migration timestamp", async () => {
+    const { storage, store } = installStorageMock();
+    store.set(
+      "markean:workspace",
+      JSON.stringify({
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [
+          {
+            id: "note_1",
+            folderId: "notes",
+            title: "Hello",
+            body: "# Hello",
+          },
+        ],
+        activeFolderId: "notes",
+        activeNoteId: "note_1",
+      }),
+    );
+
+    await migrateFromLocalStorage();
+
+    const notes = await db.notes.toArray();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatchObject({
+      id: "note_1",
+      updatedAt: expect.any(String),
+    });
+    expect(notes[0].updatedAt).toBeTruthy();
+    expect(storage.removeItem).toHaveBeenCalledWith("markean:workspace");
+  });
+
   it("skips migration when IndexedDB already has data", async () => {
     const { store } = installStorageMock();
     store.set(
@@ -357,6 +388,23 @@ describe("migrateFromLocalStorage", () => {
           },
         ],
         activeFolderId: "",
+        activeNoteId: "note_1",
+      },
+    ],
+    [
+      "non-string note updatedAt",
+      {
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [
+          {
+            id: "note_1",
+            folderId: "notes",
+            title: "Hello",
+            body: "# Hello",
+            updatedAt: 123,
+          },
+        ],
+        activeFolderId: "notes",
         activeNoteId: "note_1",
       },
     ],

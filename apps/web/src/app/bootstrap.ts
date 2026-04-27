@@ -25,7 +25,7 @@ type LegacyWorkspace = {
     folderId: string;
     title: string;
     body: string;
-    updatedAt: string;
+    updatedAt?: string;
   }>;
   activeFolderId: string;
   activeNoteId: string;
@@ -143,7 +143,7 @@ function isLegacyNote(value: unknown): value is LegacyWorkspace["notes"][number]
     isNonBlank(note.folderId) &&
     typeof note.title === "string" &&
     typeof note.body === "string" &&
-    typeof note.updatedAt === "string"
+    (!("updatedAt" in note) || typeof note.updatedAt === "string")
   );
 }
 
