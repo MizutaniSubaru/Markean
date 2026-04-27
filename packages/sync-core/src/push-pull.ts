@@ -24,6 +24,7 @@ type SyncableDatabase = {
     put(value: { key: string; value: string }): Promise<unknown>;
     delete(key: string): Promise<unknown>;
   };
+  transaction?: unknown;
 };
 
 type ApiClient = {
@@ -61,6 +62,58 @@ type SyncApplyOptions = {
 
 function shouldApply(options?: SyncApplyOptions): boolean {
   return options?.shouldApply?.() ?? true;
+}
+
+class StaleSyncApplicationError extends Error {
+  constructor() {
+    super("Stale sync application");
+  }
+}
+
+function assertShouldApply(options: SyncApplyOptions): void {
+  if (!shouldApply(options)) {
+    throw new StaleSyncApplicationError();
+  }
+}
+
+function hasTransaction(
+  db: SyncableDatabase,
+): db is SyncableDatabase & { transaction: (...args: unknown[]) => Promise<unknown> } {
+  return typeof db.transaction === "function";
+}
+
+async function applyLocalSyncChanges(
+  db: SyncableDatabase,
+  options: SyncApplyOptions,
+  apply: () => Promise<void>,
+): Promise<boolean> {
+  try {
+    if (hasTransaction(db)) {
+      await db.transaction(
+        "rw",
+        db.notes,
+        db.folders,
+        db.pendingChanges,
+        db.syncState,
+        async () => {
+          assertShouldApply(options);
+          await apply();
+          assertShouldApply(options);
+        },
+      );
+      return true;
+    }
+
+    assertShouldApply(options);
+    await apply();
+    assertShouldApply(options);
+    return true;
+  } catch (error) {
+    if (error instanceof StaleSyncApplicationError) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 export function queueChange(
@@ -113,29 +166,34 @@ export async function pushChanges(
 
   const acceptedChanges = pending.slice(0, result.accepted.length);
 
-  for (const [index, accepted] of result.accepted.entries()) {
-    const change = acceptedChanges[index];
-    if (!change) continue;
-    if (!shouldApply(options)) return { conflicts: result.conflicts ?? [] };
+  await applyLocalSyncChanges(db, options, async () => {
+    for (const [index, accepted] of result.accepted.entries()) {
+      const change = acceptedChanges[index];
+      if (!change) continue;
+      assertShouldApply(options);
 
-    if (change.entityType === "note") {
-      await db.notes.update(change.entityId, { currentRevision: accepted.acceptedRevision });
-    } else {
-      await db.folders.update(change.entityId, { currentRevision: accepted.acceptedRevision });
+      if (change.entityType === "note") {
+        await db.notes.update(change.entityId, { currentRevision: accepted.acceptedRevision });
+      } else {
+        await db.folders.update(change.entityId, { currentRevision: accepted.acceptedRevision });
+      }
+      assertShouldApply(options);
     }
-  }
 
-  if (result.accepted.length > 0) {
-    if (!shouldApply(options)) return { conflicts: result.conflicts ?? [] };
-    const acceptedIds = acceptedChanges.map((p) => p.clientChangeId);
-    await db.pendingChanges.where("clientChangeId").anyOf(acceptedIds).delete();
-  }
+    if (result.accepted.length > 0) {
+      assertShouldApply(options);
+      const acceptedIds = acceptedChanges.map((p) => p.clientChangeId);
+      await db.pendingChanges.where("clientChangeId").anyOf(acceptedIds).delete();
+      assertShouldApply(options);
+    }
 
-  const latestCursor = result.accepted.at(-1)?.cursor;
-  if (latestCursor !== undefined) {
-    if (!shouldApply(options)) return { conflicts: result.conflicts ?? [] };
-    await db.syncState.put({ key: "syncCursor", value: String(latestCursor) });
-  }
+    const latestCursor = result.accepted.at(-1)?.cursor;
+    if (latestCursor !== undefined) {
+      assertShouldApply(options);
+      await db.syncState.put({ key: "syncCursor", value: String(latestCursor) });
+      assertShouldApply(options);
+    }
+  });
 
   return { conflicts: result.conflicts ?? [] };
 }
@@ -152,48 +210,54 @@ export async function pullChanges(
   const result = await apiClient.syncPull(cursor);
   if (!shouldApply(options)) return;
 
-  for (const event of result.events) {
-    if (event.sourceDeviceId === deviceId) continue;
-    if (!shouldApply(options)) return;
+  await applyLocalSyncChanges(db, options, async () => {
+    for (const event of result.events) {
+      if (event.sourceDeviceId === deviceId) continue;
+      assertShouldApply(options);
 
-    if (event.operation === "delete") {
-      if (event.entityType === "note") {
-        await db.notes.update(event.entityId, { deletedAt: new Date().toISOString() });
-      } else {
-        await db.folders.update(event.entityId, { deletedAt: new Date().toISOString() });
+      if (event.operation === "delete") {
+        if (event.entityType === "note") {
+          await db.notes.update(event.entityId, { deletedAt: new Date().toISOString() });
+        } else {
+          await db.folders.update(event.entityId, { deletedAt: new Date().toISOString() });
+        }
+        assertShouldApply(options);
+        continue;
       }
-      continue;
+
+      if (!event.entity) continue;
+
+      if (event.entityType === "note") {
+        assertShouldApply(options);
+        await db.notes.put({
+          id: event.entity.id as string,
+          folderId: event.entity.folderId as string,
+          title: event.entity.title as string,
+          bodyMd: event.entity.bodyMd as string,
+          bodyPlain: event.entity.bodyPlain as string,
+          currentRevision: event.entity.currentRevision as number,
+          updatedAt: event.entity.updatedAt as string,
+          deletedAt: (event.entity.deletedAt as string) ?? null,
+        });
+        assertShouldApply(options);
+      } else {
+        assertShouldApply(options);
+        await db.folders.put({
+          id: event.entity.id as string,
+          name: event.entity.name as string,
+          sortOrder: event.entity.sortOrder as number,
+          currentRevision: event.entity.currentRevision as number,
+          updatedAt: event.entity.updatedAt as string,
+          deletedAt: (event.entity.deletedAt as string) ?? null,
+        });
+        assertShouldApply(options);
+      }
     }
 
-    if (!event.entity) continue;
-
-    if (event.entityType === "note") {
-      if (!shouldApply(options)) return;
-      await db.notes.put({
-        id: event.entity.id as string,
-        folderId: event.entity.folderId as string,
-        title: event.entity.title as string,
-        bodyMd: event.entity.bodyMd as string,
-        bodyPlain: event.entity.bodyPlain as string,
-        currentRevision: event.entity.currentRevision as number,
-        updatedAt: event.entity.updatedAt as string,
-        deletedAt: (event.entity.deletedAt as string) ?? null,
-      });
-    } else {
-      if (!shouldApply(options)) return;
-      await db.folders.put({
-        id: event.entity.id as string,
-        name: event.entity.name as string,
-        sortOrder: event.entity.sortOrder as number,
-        currentRevision: event.entity.currentRevision as number,
-        updatedAt: event.entity.updatedAt as string,
-        deletedAt: (event.entity.deletedAt as string) ?? null,
-      });
-    }
-  }
-
-  if (!shouldApply(options)) return;
-  await db.syncState.put({ key: "syncCursor", value: String(result.nextCursor) });
+    assertShouldApply(options);
+    await db.syncState.put({ key: "syncCursor", value: String(result.nextCursor) });
+    assertShouldApply(options);
+  });
 }
 
 export function getDeviceId(db: SyncableDatabase): Promise<string>;

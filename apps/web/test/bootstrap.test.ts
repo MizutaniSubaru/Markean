@@ -1097,6 +1097,65 @@ describe("bootstrapApp", () => {
     expect(getScheduler()).not.toBeNull();
   });
 
+  it("rejects remote notes whose parent folder is absent from the remote active snapshot", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "local-folder",
+      name: "Local",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const localNote: NoteRecord = {
+      id: "local-note",
+      folderId: localFolder.id,
+      title: "Local note",
+      bodyMd: "# Local",
+      bodyPlain: "Local",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.notes.put(localNote);
+    await localDb.syncState.put({ key: "syncCursor", value: "37" });
+    localDb.close();
+    const remoteNote: NoteRecord = {
+      id: "remote-note",
+      folderId: localFolder.id,
+      title: "Remote note",
+      bodyMd: "# Remote",
+      bodyPlain: "Remote",
+      currentRevision: 2,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+      deletedAt: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [remoteNote],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+    await expect(db.notes.get(localNote.id)).resolves.toEqual(localNote);
+    await expect(db.notes.get(remoteNote.id)).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "37",
+    });
+    expect(getScheduler()).not.toBeNull();
+  });
+
   it("rejects deleted remote folders and notes that reference them", async () => {
     installStorageMock();
     const localDb = createWebDatabase("markean");
@@ -1559,7 +1618,7 @@ describe("bootstrapApp", () => {
     expect(useNotesStore.getState().notes).toContainEqual(remoteNote);
   });
 
-  it("accepts a valid remote note that references an existing local folder", async () => {
+  it("accepts a valid remote note whose parent folder is in the remote active snapshot", async () => {
     installStorageMock();
     const localDb = createWebDatabase("markean");
     const localFolder: FolderRecord = {
@@ -1586,7 +1645,7 @@ describe("bootstrapApp", () => {
       "fetch",
       vi.fn().mockResolvedValue({
         json: vi.fn().mockResolvedValue({
-          folders: [],
+          folders: [localFolder],
           notes: [remoteNote],
           syncCursor: 42,
         }),
@@ -1658,7 +1717,7 @@ describe("bootstrapApp", () => {
     expect(getScheduler()).not.toBeNull();
   });
 
-  it("accepts a remote note when its local parent is created before remote merge", async () => {
+  it("accepts a remote note when its parent is created locally and included in the remote snapshot", async () => {
     installStorageMock();
     const localFolder: FolderRecord = {
       id: "created-folder",
@@ -1684,7 +1743,7 @@ describe("bootstrapApp", () => {
         json: vi.fn().mockImplementation(async () => {
           await getDb().folders.put(localFolder);
           return {
-            folders: [],
+            folders: [localFolder],
             notes: [remoteNote],
             syncCursor: 42,
           };

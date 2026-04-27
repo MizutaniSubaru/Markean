@@ -188,6 +188,52 @@ describe("sync engine queue", () => {
     await expect(db.syncState.get("syncCursor")).resolves.toBeUndefined();
   });
 
+  it("rolls back accepted push changes when shouldApply becomes false during revision update", async () => {
+    const db = createWebDatabase(`test-markean-push-inflight-cancel-${crypto.randomUUID()}`);
+    const note: NoteRecord = {
+      id: "note_1",
+      folderId: "folder_1",
+      title: "Local title",
+      bodyMd: "Local body",
+      bodyPlain: "Local body",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await db.notes.put(note);
+    await queueChange(db, {
+      entityType: "note",
+      entityId: note.id,
+      operation: "update",
+      baseRevision: note.currentRevision,
+    });
+
+    const originalUpdate = db.notes.update.bind(db.notes);
+    let active = true;
+    db.notes.update = (async (key, changes) => {
+      const result = await originalUpdate(key, changes);
+      active = false;
+      return result;
+    }) as typeof db.notes.update;
+    const apiClient = {
+      async syncPush() {
+        return {
+          accepted: [{ acceptedRevision: 2, cursor: 10 }],
+          conflicts: [],
+        };
+      },
+      async syncPull() {
+        throw new Error("syncPull should not be called");
+      },
+    };
+
+    await pushChanges(db, apiClient, "device_1", { shouldApply: () => active });
+
+    await expect(db.notes.get(note.id)).resolves.toEqual(note);
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(1);
+    await expect(db.syncState.get("syncCursor")).resolves.toBeUndefined();
+  });
+
   it("does not apply pulled events when shouldApply becomes false", async () => {
     const db = createWebDatabase(`test-markean-pull-cancel-${crypto.randomUUID()}`);
     const pulledFolder: FolderRecord = {
@@ -226,6 +272,54 @@ describe("sync engine queue", () => {
     await pullChanges(db, apiClient, "device_1", { shouldApply: () => active });
 
     await expect(db.folders.get(pulledFolder.id)).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toBeUndefined();
+  });
+
+  it("rolls back pulled notes when shouldApply becomes false during note put", async () => {
+    const db = createWebDatabase(`test-markean-pull-inflight-cancel-${crypto.randomUUID()}`);
+    const pulledNote: NoteRecord = {
+      id: "note_pulled",
+      folderId: "folder_pulled",
+      title: "Pulled",
+      bodyMd: "# Pulled",
+      bodyPlain: "Pulled",
+      currentRevision: 8,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+
+    const originalPut = db.notes.put.bind(db.notes);
+    let active = true;
+    db.notes.put = (async (value) => {
+      const result = await originalPut(value);
+      active = false;
+      return result;
+    }) as typeof db.notes.put;
+    const apiClient = {
+      async syncPush() {
+        throw new Error("syncPush should not be called");
+      },
+      async syncPull() {
+        return {
+          nextCursor: 9,
+          events: [
+            {
+              cursor: 9,
+              entityType: "note",
+              entityId: pulledNote.id,
+              operation: "create",
+              revisionNumber: pulledNote.currentRevision,
+              sourceDeviceId: "server_device",
+              entity: pulledNote,
+            },
+          ],
+        };
+      },
+    };
+
+    await pullChanges(db, apiClient, "device_1", { shouldApply: () => active });
+
+    await expect(db.notes.get(pulledNote.id)).resolves.toBeUndefined();
     await expect(db.syncState.get("syncCursor")).resolves.toBeUndefined();
   });
 });

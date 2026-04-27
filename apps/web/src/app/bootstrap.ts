@@ -74,14 +74,9 @@ function isValidBootstrapResponse(
 
 function hasValidRemoteNoteParents(
   notes: NoteRecord[],
-  activeLocalFolderIds: Set<string>,
   activeRemoteFolderIds: Set<string>,
 ): boolean {
-  return notes.every(
-    (note) =>
-      activeLocalFolderIds.has(note.folderId) ||
-      activeRemoteFolderIds.has(note.folderId),
-  );
+  return notes.every((note) => activeRemoteFolderIds.has(note.folderId));
 }
 
 function isNonBlank(value: string): boolean {
@@ -535,15 +530,9 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       await concurrencyHooks.beforeRemoteWrite?.();
       if (isStale()) throw new StaleBootstrapError();
       let skippedPendingBootstrapConflict = false;
-      const activeLocalFolderIdsInTransaction = new Set(
-        (await db.folders.toArray())
-          .filter((folder) => !folder.deletedAt)
-          .map((folder) => folder.id),
-      );
       if (
         !hasValidRemoteNoteParents(
           serverNotes,
-          activeLocalFolderIdsInTransaction,
           serverFolderIds,
         )
       ) {
