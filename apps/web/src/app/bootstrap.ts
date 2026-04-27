@@ -303,11 +303,9 @@ function restoreEditorSelection(
   const activeFolders = localFolders.filter((folder) => !folder.deletedAt);
   const activeNotes = localNotes.filter((note) => !note.deletedAt);
 
-  if (migratedSelection?.activeFolderId) {
+  if (migratedSelection !== null) {
     useEditorStore.getState().selectFolder(migratedSelection.activeFolderId);
-    if (migratedSelection.activeNoteId) {
-      useEditorStore.getState().selectNote(migratedSelection.activeNoteId);
-    }
+    useEditorStore.getState().selectNote(migratedSelection.activeNoteId);
     return;
   }
 

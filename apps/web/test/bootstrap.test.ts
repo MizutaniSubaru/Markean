@@ -537,6 +537,38 @@ describe("bootstrapApp", () => {
     });
   });
 
+  it("preserves empty migrated legacy active selection during bootstrap", async () => {
+    const { store } = installStorageMock();
+    store.set(
+      "markean:workspace",
+      JSON.stringify({
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [
+          {
+            id: "note_1",
+            folderId: "notes",
+            title: "Hello",
+            body: "# Hello",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+        ],
+        activeFolderId: "",
+        activeNoteId: "",
+      }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("offline")),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: "",
+      activeNoteId: "",
+    });
+  });
+
   it("creates a welcome note, loads local stores, and starts scheduler when remote bootstrap fails", async () => {
     installStorageMock();
     vi.stubGlobal(
