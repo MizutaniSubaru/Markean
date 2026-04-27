@@ -9,6 +9,8 @@ export function createSyncScheduler(executeSyncCycle: () => Promise<void>) {
   let isSyncing = false;
   let pendingRetry = false;
   let isStarted = false;
+  let generation = 0;
+  let pendingRetryGeneration: number | null = null;
 
   const handleOnline = () => {
     useSyncStore.getState().setOnline(true);
@@ -22,6 +24,7 @@ export function createSyncScheduler(executeSyncCycle: () => Promise<void>) {
   async function run(): Promise<void> {
     if (isSyncing) {
       pendingRetry = true;
+      pendingRetryGeneration = generation;
       return;
     }
 
@@ -32,8 +35,9 @@ export function createSyncScheduler(executeSyncCycle: () => Promise<void>) {
       // The sync service owns error state; the scheduler only keeps future runs unblocked.
     } finally {
       isSyncing = false;
-      if (pendingRetry) {
+      if (pendingRetry && pendingRetryGeneration === generation) {
         pendingRetry = false;
+        pendingRetryGeneration = null;
         void run();
       }
     }
@@ -64,6 +68,10 @@ export function createSyncScheduler(executeSyncCycle: () => Promise<void>) {
   }
 
   function stop(): void {
+    generation += 1;
+    pendingRetry = false;
+    pendingRetryGeneration = null;
+
     if (debounceTimer !== null) {
       clearTimeout(debounceTimer);
       debounceTimer = null;

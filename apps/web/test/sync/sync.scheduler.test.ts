@@ -182,6 +182,50 @@ describe("sync.scheduler", () => {
     expect(executeSyncCycle).toHaveBeenCalledTimes(2);
   });
 
+  it("does not run queued retry after stop", async () => {
+    const firstCycle = createDeferred();
+    const executeSyncCycle = vi
+      .fn<() => Promise<void>>()
+      .mockReturnValueOnce(firstCycle.promise)
+      .mockResolvedValue(undefined);
+    const scheduler = createTrackedScheduler(executeSyncCycle);
+
+    scheduler.requestSync();
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    expect(executeSyncCycle).toHaveBeenCalledTimes(1);
+
+    scheduler.requestSync();
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    scheduler.stop();
+    firstCycle.resolve();
+    await Promise.resolve();
+
+    expect(executeSyncCycle).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows requestSync after stop cancels a queued retry", async () => {
+    const firstCycle = createDeferred();
+    const executeSyncCycle = vi
+      .fn<() => Promise<void>>()
+      .mockReturnValueOnce(firstCycle.promise)
+      .mockResolvedValue(undefined);
+    const scheduler = createTrackedScheduler(executeSyncCycle);
+
+    scheduler.requestSync();
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    scheduler.requestSync();
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    scheduler.stop();
+    firstCycle.resolve();
+    await Promise.resolve();
+    expect(executeSyncCycle).toHaveBeenCalledTimes(1);
+
+    scheduler.requestSync();
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+
+    expect(executeSyncCycle).toHaveBeenCalledTimes(2);
+  });
+
   it("clears running state after rejection and allows later requestSync", async () => {
     const executeSyncCycle = vi
       .fn<() => Promise<void>>()
