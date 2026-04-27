@@ -13,8 +13,12 @@ describe("editor.store", () => {
   });
 
   it("selects a folder", () => {
+    useEditorStore.setState({ searchQuery: "hello" });
+
     useEditorStore.getState().selectFolder("folder_1");
+
     expect(useEditorStore.getState().activeFolderId).toBe("folder_1");
+    expect(useEditorStore.getState().searchQuery).toBe("");
   });
 
   it("selects a note", () => {
