@@ -43,6 +43,10 @@ type BootstrapConcurrencyHooks = {
   beforeRemoteWrite?: () => Promise<void> | void;
 };
 
+type BootstrapApplyOptions = {
+  shouldApply?: () => boolean;
+};
+
 let concurrencyHooks: BootstrapConcurrencyHooks = {};
 
 export function setBootstrapConcurrencyHooksForTests(hooks: BootstrapConcurrencyHooks): void {
@@ -52,6 +56,16 @@ export function setBootstrapConcurrencyHooksForTests(hooks: BootstrapConcurrency
 class StaleBootstrapError extends Error {
   constructor() {
     super("Stale bootstrap run");
+  }
+}
+
+function shouldApplyBootstrap(options: BootstrapApplyOptions = {}): boolean {
+  return options.shouldApply?.() ?? true;
+}
+
+function assertShouldApplyBootstrap(options: BootstrapApplyOptions = {}): void {
+  if (!shouldApplyBootstrap(options)) {
+    throw new StaleBootstrapError();
   }
 }
 
@@ -262,7 +276,19 @@ async function queueCreateChangeOnce(
   });
 }
 
-async function migrateFromLocalStorageInternal(): Promise<MigrationSelection | null> {
+function waitForTransactionPromise<T>(
+  db: MarkeanWebDatabase,
+  value: PromiseLike<T> | T,
+): Promise<T> {
+  const dexieConstructor = db.constructor as unknown as {
+    waitFor<TValue>(promise: PromiseLike<TValue> | TValue): Promise<TValue>;
+  };
+  return dexieConstructor.waitFor(value);
+}
+
+async function migrateFromLocalStorageInternal(
+  options: BootstrapApplyOptions = {},
+): Promise<MigrationSelection | null> {
   const db = getDb();
   const existingCount = (await db.notes.count()) + (await db.folders.count());
   if (existingCount > 0) return null;
@@ -312,23 +338,31 @@ async function migrateFromLocalStorageInternal(): Promise<MigrationSelection | n
 
   let didMigrate = false;
   await db.transaction("rw", db.folders, db.notes, db.pendingChanges, async () => {
-    await concurrencyHooks.beforeMigrationWrite?.();
+    await waitForTransactionPromise(db, concurrencyHooks.beforeMigrationWrite?.());
+    assertShouldApplyBootstrap(options);
     const existingCountInTransaction =
       (await db.notes.count()) + (await db.folders.count());
     if (existingCountInTransaction > 0) return;
 
+    assertShouldApplyBootstrap(options);
     await db.folders.bulkPut(folders);
+    assertShouldApplyBootstrap(options);
     await db.notes.bulkPut(notes);
+    assertShouldApplyBootstrap(options);
     for (const folder of folders) {
       await queueCreateChangeOnce(db, "folder", folder.id);
+      assertShouldApplyBootstrap(options);
     }
     for (const note of notes) {
       await queueCreateChangeOnce(db, "note", note.id);
+      assertShouldApplyBootstrap(options);
     }
+    assertShouldApplyBootstrap(options);
     didMigrate = true;
   });
 
   if (!didMigrate) return null;
+  assertShouldApplyBootstrap(options);
 
   removeLocalStorage(WORKSPACE_KEY);
   removeLegacyDrafts();
@@ -352,7 +386,7 @@ function detectLocale(): string {
   return navigator.language.startsWith("zh") ? "zh" : "en";
 }
 
-async function ensureWelcomeNote(): Promise<void> {
+async function ensureWelcomeNote(options: BootstrapApplyOptions = {}): Promise<void> {
   const db = getDb();
   const existingCount = (await db.notes.count()) + (await db.folders.count());
   if (existingCount > 0) return;
@@ -363,11 +397,13 @@ async function ensureWelcomeNote(): Promise<void> {
   const now = new Date().toISOString();
 
   await db.transaction("rw", db.folders, db.notes, db.pendingChanges, async () => {
-    await concurrencyHooks.beforeWelcomeWrite?.();
+    await waitForTransactionPromise(db, concurrencyHooks.beforeWelcomeWrite?.());
+    assertShouldApplyBootstrap(options);
     const existingCountInTransaction =
       (await db.notes.count()) + (await db.folders.count());
     if (existingCountInTransaction > 0) return;
 
+    assertShouldApplyBootstrap(options);
     await db.folders.put({
       id: folderId,
       name: locale.startsWith("zh") ? "笔记" : "Notes",
@@ -376,7 +412,9 @@ async function ensureWelcomeNote(): Promise<void> {
       updatedAt: now,
       deletedAt: null,
     });
+    assertShouldApplyBootstrap(options);
     await queueCreateChangeOnce(db, "folder", folderId);
+    assertShouldApplyBootstrap(options);
 
     await db.notes.put({
       id: "welcome-note",
@@ -388,7 +426,9 @@ async function ensureWelcomeNote(): Promise<void> {
       updatedAt: now,
       deletedAt: null,
     });
+    assertShouldApplyBootstrap(options);
     await queueCreateChangeOnce(db, "note", "welcome-note");
+    assertShouldApplyBootstrap(options);
   });
 }
 
@@ -477,19 +517,32 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
   initDb(db);
   const isStale = () => generation !== bootstrapGeneration;
 
-  const migratedSelection = await migrateFromLocalStorageInternal();
-  if (migratedSelection !== null) {
-    pendingMigratedSelection = migratedSelection;
-  }
-  await concurrencyHooks.afterMigration?.();
-  if (isStale()) {
-    db.close();
-    return;
-  }
-  await ensureWelcomeNote();
-  if (isStale()) {
-    db.close();
-    return;
+  let migratedSelection: MigrationSelection | null = null;
+  try {
+    migratedSelection = await migrateFromLocalStorageInternal({
+      shouldApply: () => !isStale(),
+    });
+    if (migratedSelection !== null) {
+      pendingMigratedSelection = migratedSelection;
+    }
+    await concurrencyHooks.afterMigration?.();
+    if (isStale()) {
+      db.close();
+      return;
+    }
+    await ensureWelcomeNote({
+      shouldApply: () => !isStale(),
+    });
+    if (isStale()) {
+      db.close();
+      return;
+    }
+  } catch (error) {
+    if (error instanceof StaleBootstrapError) {
+      db.close();
+      return;
+    }
+    throw error;
   }
 
   const [localNotes, localFolders] = await Promise.all([getAllNotes(), getAllFolders()]);

@@ -785,6 +785,77 @@ describe("bootstrapApp", () => {
     });
   });
 
+  it("does not apply legacy migration when bootstrap becomes stale before migration writes", async () => {
+    const { storage, store } = installStorageMock();
+    store.set(
+      "markean:workspace",
+      JSON.stringify({
+        folders: [
+          { id: "first", name: "First" },
+          { id: "second", name: "Second" },
+        ],
+        notes: [
+          {
+            id: "first_note",
+            folderId: "first",
+            title: "First note",
+            body: "# First",
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+          {
+            id: "second_note",
+            folderId: "second",
+            title: "Second note",
+            body: "# Second",
+            updatedAt: "2026-04-21T10:00:00.000Z",
+          },
+        ],
+        activeFolderId: "second",
+        activeNoteId: "second_note",
+      }),
+    );
+    store.set("markean:draft:second_note", "# Second draft");
+    store.set("markean:sync-status", "unsynced");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    const addListener = vi.spyOn(window, "addEventListener");
+    const firstMigrationPaused = createDeferred<void>();
+    const releaseFirstMigration = createDeferred<void>();
+    let migrationWriteAttempts = 0;
+    setBootstrapConcurrencyHooksForTests({
+      beforeMigrationWrite: async () => {
+        migrationWriteAttempts += 1;
+        if (migrationWriteAttempts === 1) {
+          firstMigrationPaused.resolve(undefined);
+          await releaseFirstMigration.promise;
+          return;
+        }
+      },
+    });
+
+    const staleRun = bootstrapApp("https://example.test");
+    await firstMigrationPaused.promise;
+    const latestRun = bootstrapApp("https://example.test");
+    resetSchedulerForTests();
+    releaseFirstMigration.resolve(undefined);
+    await Promise.all([staleRun, latestRun]);
+
+    const assertionDb = createWebDatabase("markean");
+    await expect(assertionDb.folders.toArray()).resolves.toEqual([]);
+    await expect(assertionDb.notes.toArray()).resolves.toEqual([]);
+    await expect(assertionDb.pendingChanges.toArray()).resolves.toEqual([]);
+    assertionDb.close();
+    expect(store.get("markean:workspace")).toBeTruthy();
+    expect(store.get("markean:draft:second_note")).toBe("# Second draft");
+    expect(store.get("markean:sync-status")).toBe("unsynced");
+    expect(storage.removeItem).not.toHaveBeenCalled();
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: "",
+      activeNoteId: "",
+    });
+    expect(getScheduler()).toBeNull();
+    expect(addListener.mock.calls.filter(([event]) => event === "online")).toHaveLength(0);
+  });
+
   it("preserves empty migrated legacy active selection during bootstrap", async () => {
     const { store } = installStorageMock();
     store.set(
@@ -894,6 +965,42 @@ describe("bootstrapApp", () => {
         }),
       ]),
     );
+  });
+
+  it("does not seed welcome records when bootstrap becomes stale before welcome writes", async () => {
+    installStorageMock();
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    const addListener = vi.spyOn(window, "addEventListener");
+    const firstWelcomePaused = createDeferred<void>();
+    const releaseFirstWelcome = createDeferred<void>();
+    let welcomeWriteAttempts = 0;
+    setBootstrapConcurrencyHooksForTests({
+      beforeWelcomeWrite: async () => {
+        welcomeWriteAttempts += 1;
+        if (welcomeWriteAttempts === 1) {
+          firstWelcomePaused.resolve(undefined);
+          await releaseFirstWelcome.promise;
+          return;
+        }
+      },
+    });
+
+    const staleRun = bootstrapApp("https://example.test");
+    await firstWelcomePaused.promise;
+    const latestRun = bootstrapApp("https://example.test");
+    resetSchedulerForTests();
+    releaseFirstWelcome.resolve(undefined);
+    await Promise.all([staleRun, latestRun]);
+
+    const assertionDb = createWebDatabase("markean");
+    await expect(assertionDb.folders.toArray()).resolves.toEqual([]);
+    await expect(assertionDb.notes.toArray()).resolves.toEqual([]);
+    await expect(assertionDb.pendingChanges.toArray()).resolves.toEqual([]);
+    assertionDb.close();
+    expect(useFoldersStore.getState().folders).toEqual([]);
+    expect(useNotesStore.getState().notes).toEqual([]);
+    expect(getScheduler()).toBeNull();
+    expect(addListener.mock.calls.filter(([event]) => event === "online")).toHaveLength(0);
   });
 
   it("preserves local data and sync cursor when remote bootstrap payload is invalid", async () => {
