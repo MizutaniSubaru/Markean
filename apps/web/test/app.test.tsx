@@ -27,7 +27,7 @@ vi.mock("../src/features/notes/components/editor/MarkeanEditor", () => ({
   ),
 }));
 
-import { App } from "../src/App";
+import { App } from "../src/app/App";
 
 type MatchMediaOptions = {
   matches: boolean;
