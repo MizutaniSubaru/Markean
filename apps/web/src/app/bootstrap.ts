@@ -55,6 +55,19 @@ class StaleBootstrapError extends Error {
   }
 }
 
+function isValidBootstrapResponse(
+  value: unknown,
+): value is { folders: unknown[]; notes: unknown[]; syncCursor: number } {
+  if (!value || typeof value !== "object") return false;
+  const bootstrap = value as Record<string, unknown>;
+  return (
+    Array.isArray(bootstrap.folders) &&
+    Array.isArray(bootstrap.notes) &&
+    typeof bootstrap.syncCursor === "number" &&
+    Number.isFinite(bootstrap.syncCursor)
+  );
+}
+
 function isNonBlank(value: string): boolean {
   return value.trim().length > 0;
 }
@@ -353,8 +366,14 @@ function restoreEditorSelection(
     const firstNote = activeNotes.find((note) => note.folderId === firstFolder.id);
     if (firstNote) {
       useEditorStore.getState().selectNote(firstNote.id);
+    } else {
+      useEditorStore.getState().selectNote("");
     }
+    return;
   }
+
+  useEditorStore.getState().selectFolder("");
+  useEditorStore.getState().selectNote("");
 }
 
 export async function bootstrapApp(baseUrl = ""): Promise<void> {
@@ -406,12 +425,11 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       db.close();
       return;
     }
-    const serverNotes = Array.isArray(bootstrap.notes)
-      ? (bootstrap.notes as NoteRecord[])
-      : [];
-    const serverFolders = Array.isArray(bootstrap.folders)
-      ? (bootstrap.folders as FolderRecord[])
-      : [];
+    if (!isValidBootstrapResponse(bootstrap)) {
+      throw new Error("Invalid bootstrap response");
+    }
+    const serverNotes = bootstrap.notes as NoteRecord[];
+    const serverFolders = bootstrap.folders as FolderRecord[];
 
     await db.transaction("rw", db.notes, db.folders, db.pendingChanges, db.syncState, async () => {
       await concurrencyHooks.beforeRemoteWrite?.();
@@ -447,7 +465,7 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       if (isStale()) throw new StaleBootstrapError();
       await db.syncState.put({
         key: "syncCursor",
-        value: String(bootstrap.syncCursor ?? 0),
+        value: String(bootstrap.syncCursor),
       });
       if (isStale()) throw new StaleBootstrapError();
     });

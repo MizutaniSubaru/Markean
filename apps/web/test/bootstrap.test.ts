@@ -87,6 +87,7 @@ describe("migrateFromLocalStorage", () => {
   });
 
   afterEach(async () => {
+    resetSchedulerForTests();
     await db.delete();
     resetDbForTests();
     vi.restoreAllMocks();
@@ -747,6 +748,117 @@ describe("bootstrapApp", () => {
         }),
       ]),
     );
+  });
+
+  it("preserves local data and sync cursor when remote bootstrap payload is invalid", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "local-folder",
+      name: "Local",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const localNote: NoteRecord = {
+      id: "local-note",
+      folderId: localFolder.id,
+      title: "Local note",
+      bodyMd: "# Local",
+      bodyPlain: "Local",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.notes.put(localNote);
+    await localDb.syncState.put({ key: "syncCursor", value: "37" });
+    localDb.close();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          error: "unauthorized",
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.toArray()).resolves.toEqual([localFolder]);
+    await expect(db.notes.toArray()).resolves.toEqual([localNote]);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "37",
+    });
+    expect(getScheduler()).not.toBeNull();
+  });
+
+  it("clears stale active note when fallback folder has no active notes", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "empty-folder",
+      name: "Empty",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    localDb.close();
+    useEditorStore.setState({
+      activeFolderId: "old-folder",
+      activeNoteId: "stale-note",
+      searchQuery: "",
+      mobileView: "folders",
+      newNoteId: null,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("offline")),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: "empty-folder",
+      activeNoteId: "",
+    });
+  });
+
+  it("clears stale active folder and note when fallback has no active folders", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    await localDb.folders.put({
+      id: "deleted-folder",
+      name: "Deleted",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: "2026-04-22T09:00:00.000Z",
+    });
+    localDb.close();
+    useEditorStore.setState({
+      activeFolderId: "old-folder",
+      activeNoteId: "stale-note",
+      searchQuery: "",
+      mobileView: "folders",
+      newNoteId: null,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("offline")),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: "",
+      activeNoteId: "",
+    });
   });
 
   it("merges newer remote bootstrap records and stores the sync cursor", async () => {
