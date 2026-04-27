@@ -64,9 +64,11 @@ function isValidBootstrapResponse(
   if (!Array.isArray(bootstrap.folders)) return false;
   if (!Array.isArray(bootstrap.notes)) return false;
   if (typeof bootstrap.syncCursor !== "number") return false;
-  if (!Number.isFinite(bootstrap.syncCursor)) return false;
+  if (!isNonNegativeInteger(bootstrap.syncCursor)) return false;
   if (!bootstrap.folders.every(isRemoteFolderRecord)) return false;
   if (!bootstrap.notes.every(isRemoteNoteRecord)) return false;
+  if (!hasUniqueIds(bootstrap.folders)) return false;
+  if (!hasUniqueIds(bootstrap.notes)) return false;
 
   const remoteFolderIds = new Set(bootstrap.folders.map((folder) => folder.id));
   return bootstrap.notes.every(
@@ -79,6 +81,14 @@ function isNonBlank(value: string): boolean {
   return value.trim().length > 0;
 }
 
+function isNonNegativeInteger(value: number): boolean {
+  return Number.isInteger(value) && value >= 0;
+}
+
+function hasUniqueIds(records: Array<{ id: string }>): boolean {
+  return new Set(records.map((record) => record.id)).size === records.length;
+}
+
 function isRemoteFolderRecord(value: unknown): value is FolderRecord {
   if (!value || typeof value !== "object") return false;
   const folder = value as Record<string, unknown>;
@@ -89,7 +99,7 @@ function isRemoteFolderRecord(value: unknown): value is FolderRecord {
     typeof folder.sortOrder === "number" &&
     Number.isFinite(folder.sortOrder) &&
     typeof folder.currentRevision === "number" &&
-    Number.isFinite(folder.currentRevision) &&
+    isNonNegativeInteger(folder.currentRevision) &&
     typeof folder.updatedAt === "string" &&
     folder.deletedAt === null
   );
@@ -107,7 +117,7 @@ function isRemoteNoteRecord(value: unknown): value is NoteRecord {
     typeof note.bodyMd === "string" &&
     typeof note.bodyPlain === "string" &&
     typeof note.currentRevision === "number" &&
-    Number.isFinite(note.currentRevision) &&
+    isNonNegativeInteger(note.currentRevision) &&
     typeof note.updatedAt === "string" &&
     note.deletedAt === null
   );
@@ -483,10 +493,14 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
     await db.transaction("rw", db.notes, db.folders, db.pendingChanges, db.syncState, async () => {
       await concurrencyHooks.beforeRemoteWrite?.();
       if (isStale()) throw new StaleBootstrapError();
+      let skippedPendingBootstrapConflict = false;
 
       for (const note of serverNotes) {
         const pendingChanges = await db.pendingChanges.where("entityId").equals(note.id).toArray();
-        if (pendingChanges.some((change) => change.entityType === "note")) continue;
+        if (pendingChanges.some((change) => change.entityType === "note")) {
+          skippedPendingBootstrapConflict = true;
+          continue;
+        }
 
         const local = await db.notes.get(note.id);
         if (!local || (note.currentRevision ?? 0) > (local.currentRevision ?? 0)) {
@@ -501,7 +515,10 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
           .where("entityId")
           .equals(folder.id)
           .toArray();
-        if (pendingChanges.some((change) => change.entityType === "folder")) continue;
+        if (pendingChanges.some((change) => change.entityType === "folder")) {
+          skippedPendingBootstrapConflict = true;
+          continue;
+        }
 
         const local = await db.folders.get(folder.id);
         if (!local || (folder.currentRevision ?? 0) > (local.currentRevision ?? 0)) {
@@ -541,10 +558,12 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       }
 
       if (isStale()) throw new StaleBootstrapError();
-      await db.syncState.put({
-        key: "syncCursor",
-        value: String(bootstrap.syncCursor),
-      });
+      if (!skippedPendingBootstrapConflict) {
+        await db.syncState.put({
+          key: "syncCursor",
+          value: String(bootstrap.syncCursor),
+        });
+      }
       if (isStale()) throw new StaleBootstrapError();
     });
 

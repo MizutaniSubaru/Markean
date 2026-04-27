@@ -1119,6 +1119,185 @@ describe("bootstrapApp", () => {
     });
   });
 
+  const invalidNumericBootstrapCases: Array<[
+    string,
+    {
+      syncCursor?: number;
+      folder?: Partial<FolderRecord>;
+      note?: Partial<NoteRecord>;
+    },
+  ]> = [
+    ["negative sync cursor", { syncCursor: -1 }],
+    ["fractional sync cursor", { syncCursor: 1.5 }],
+    [
+      "negative folder revision",
+      { folder: { currentRevision: -1 } },
+    ],
+    [
+      "fractional folder revision",
+      { folder: { currentRevision: 1.5 } },
+    ],
+    [
+      "negative note revision",
+      { note: { currentRevision: -1 } },
+    ],
+    [
+      "fractional note revision",
+      { note: { currentRevision: 1.5 } },
+    ],
+  ];
+
+  it.each(invalidNumericBootstrapCases)("rejects remote bootstrap with %s", async (_name, override) => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "local-folder",
+      name: "Local",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.syncState.put({ key: "syncCursor", value: "37" });
+    localDb.close();
+
+    const remoteFolder: FolderRecord = {
+      id: "remote-folder",
+      name: "Remote",
+      sortOrder: 1,
+      currentRevision: 2,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+      deletedAt: null,
+      ...override.folder,
+    };
+    const remoteNote: NoteRecord = {
+      id: "remote-note",
+      folderId: remoteFolder.id,
+      title: "Remote note",
+      bodyMd: "# Remote",
+      bodyPlain: "Remote",
+      currentRevision: 2,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+      deletedAt: null,
+      ...override.note,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [remoteFolder],
+          notes: [remoteNote],
+          syncCursor: override.syncCursor ?? 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+    await expect(db.folders.get(remoteFolder.id)).resolves.toBeUndefined();
+    await expect(db.notes.get(remoteNote.id)).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "37",
+    });
+    expect(getScheduler()).not.toBeNull();
+  });
+
+  it("rejects duplicate remote folder IDs", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    await localDb.syncState.put({ key: "syncCursor", value: "37" });
+    localDb.close();
+    const firstFolder: FolderRecord = {
+      id: "duplicate-folder",
+      name: "First",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const secondFolder: FolderRecord = {
+      ...firstFolder,
+      name: "Second",
+      sortOrder: 1,
+      currentRevision: 2,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [firstFolder, secondFolder],
+          notes: [],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(firstFolder.id)).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "37",
+    });
+  });
+
+  it("rejects duplicate remote note IDs", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "local-folder",
+      name: "Local",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.syncState.put({ key: "syncCursor", value: "37" });
+    localDb.close();
+    const firstNote: NoteRecord = {
+      id: "duplicate-note",
+      folderId: localFolder.id,
+      title: "First",
+      bodyMd: "# First",
+      bodyPlain: "First",
+      currentRevision: 1,
+      updatedAt: "2026-04-23T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const secondNote: NoteRecord = {
+      ...firstNote,
+      title: "Second",
+      bodyMd: "# Second",
+      bodyPlain: "Second",
+      currentRevision: 2,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [firstNote, secondNote],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.notes.get(firstNote.id)).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "37",
+    });
+  });
+
   it("clears stale active note when fallback folder has no active notes", async () => {
     installStorageMock();
     const localDb = createWebDatabase("markean");
@@ -1351,6 +1530,7 @@ describe("bootstrapApp", () => {
     };
     await localDb.folders.put(localFolder);
     await localDb.notes.put(localNote);
+    await localDb.syncState.put({ key: "syncCursor", value: "3" });
     await queueChange(localDb, {
       entityType: "folder",
       entityId: localFolder.id,
@@ -1380,6 +1560,10 @@ describe("bootstrapApp", () => {
     const db = getDb();
     await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
     await expect(db.notes.get(localNote.id)).resolves.toEqual(localNote);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "42",
+    });
     const pendingChanges = await db.pendingChanges.toArray();
     expect(pendingChanges).toHaveLength(2);
     expect(pendingChanges).toEqual(
@@ -1423,6 +1607,7 @@ describe("bootstrapApp", () => {
     };
     await localDb.folders.put(localFolder);
     await localDb.notes.put(localNote);
+    await localDb.syncState.put({ key: "syncCursor", value: "3" });
     await queueChange(localDb, {
       entityType: "folder",
       entityId: localFolder.id,
@@ -1451,12 +1636,30 @@ describe("bootstrapApp", () => {
       currentRevision: 10,
       updatedAt: "2026-04-22T10:00:00.000Z",
     };
+    const otherRemoteFolder: FolderRecord = {
+      id: "other-remote-folder",
+      name: "Other remote folder",
+      sortOrder: 1,
+      currentRevision: 2,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const otherRemoteNote: NoteRecord = {
+      id: "other-remote-note",
+      folderId: otherRemoteFolder.id,
+      title: "Other remote note",
+      bodyMd: "# Other",
+      bodyPlain: "Other",
+      currentRevision: 2,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
         json: vi.fn().mockResolvedValue({
-          folders: [remoteFolder],
-          notes: [remoteNote],
+          folders: [remoteFolder, otherRemoteFolder],
+          notes: [remoteNote, otherRemoteNote],
           syncCursor: 7,
         }),
       }),
@@ -1467,6 +1670,12 @@ describe("bootstrapApp", () => {
     const db = getDb();
     await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
     await expect(db.notes.get(localNote.id)).resolves.toEqual(localNote);
+    await expect(db.folders.get(otherRemoteFolder.id)).resolves.toEqual(otherRemoteFolder);
+    await expect(db.notes.get(otherRemoteNote.id)).resolves.toEqual(otherRemoteNote);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "3",
+    });
     const pendingChanges = await db.pendingChanges.toArray();
     expect(pendingChanges).toHaveLength(2);
     expect(pendingChanges).toEqual(
