@@ -796,6 +796,114 @@ describe("bootstrapApp", () => {
     expect(getScheduler()).not.toBeNull();
   });
 
+  it("preserves local data and sync cursor when remote note entry is malformed", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "local-folder",
+      name: "Local",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.syncState.put({ key: "syncCursor", value: "37" });
+    localDb.close();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [{ id: "bad", currentRevision: 1 }],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.toArray()).resolves.toEqual([localFolder]);
+    await expect(db.notes.get("bad")).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "37",
+    });
+  });
+
+  it("preserves local data and sync cursor when remote folder entry is malformed", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "local-folder",
+      name: "Local",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.syncState.put({ key: "syncCursor", value: "37" });
+    localDb.close();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [{ id: "bad-folder", name: "Bad", currentRevision: 1 }],
+          notes: [],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.toArray()).resolves.toEqual([localFolder]);
+    await expect(db.folders.get("bad-folder")).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "37",
+    });
+  });
+
+  it("preserves local data and sync cursor when remote note references a missing folder", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    await localDb.syncState.put({ key: "syncCursor", value: "37" });
+    localDb.close();
+    const orphanNote: NoteRecord = {
+      id: "orphan-note",
+      folderId: "missing-folder",
+      title: "Orphan",
+      bodyMd: "# Orphan",
+      bodyPlain: "Orphan",
+      currentRevision: 1,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [orphanNote],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.notes.get(orphanNote.id)).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "37",
+    });
+  });
+
   it("clears stale active note when fallback folder has no active notes", async () => {
     installStorageMock();
     const localDb = createWebDatabase("markean");
@@ -903,6 +1011,51 @@ describe("bootstrapApp", () => {
     });
     expect(useFoldersStore.getState().folders).toContainEqual(remoteFolder);
     expect(useNotesStore.getState().notes).toContainEqual(remoteNote);
+  });
+
+  it("accepts a valid remote note that references an existing local folder", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "local-folder",
+      name: "Local",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    localDb.close();
+    const remoteNote: NoteRecord = {
+      id: "remote-note",
+      folderId: localFolder.id,
+      title: "Remote note",
+      bodyMd: "# Remote",
+      bodyPlain: "Remote",
+      currentRevision: 4,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [remoteNote],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+    await expect(db.notes.get(remoteNote.id)).resolves.toEqual(remoteNote);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "42",
+    });
   });
 
   it("does not overwrite local records with pending changes during remote bootstrap", async () => {

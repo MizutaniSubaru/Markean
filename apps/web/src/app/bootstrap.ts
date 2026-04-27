@@ -57,19 +57,64 @@ class StaleBootstrapError extends Error {
 
 function isValidBootstrapResponse(
   value: unknown,
-): value is { folders: unknown[]; notes: unknown[]; syncCursor: number } {
+  existingFolderIds: Set<string>,
+): value is { folders: FolderRecord[]; notes: NoteRecord[]; syncCursor: number } {
   if (!value || typeof value !== "object") return false;
   const bootstrap = value as Record<string, unknown>;
-  return (
-    Array.isArray(bootstrap.folders) &&
-    Array.isArray(bootstrap.notes) &&
-    typeof bootstrap.syncCursor === "number" &&
-    Number.isFinite(bootstrap.syncCursor)
+  if (!Array.isArray(bootstrap.folders)) return false;
+  if (!Array.isArray(bootstrap.notes)) return false;
+  if (typeof bootstrap.syncCursor !== "number") return false;
+  if (!Number.isFinite(bootstrap.syncCursor)) return false;
+  if (!bootstrap.folders.every(isRemoteFolderRecord)) return false;
+  if (!bootstrap.notes.every(isRemoteNoteRecord)) return false;
+
+  const remoteFolderIds = new Set(bootstrap.folders.map((folder) => folder.id));
+  return bootstrap.notes.every(
+    (note) =>
+      existingFolderIds.has(note.folderId) || remoteFolderIds.has(note.folderId),
   );
 }
 
 function isNonBlank(value: string): boolean {
   return value.trim().length > 0;
+}
+
+function isDeletedAt(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isRemoteFolderRecord(value: unknown): value is FolderRecord {
+  if (!value || typeof value !== "object") return false;
+  const folder = value as Record<string, unknown>;
+  return (
+    typeof folder.id === "string" &&
+    isNonBlank(folder.id) &&
+    typeof folder.name === "string" &&
+    typeof folder.sortOrder === "number" &&
+    Number.isFinite(folder.sortOrder) &&
+    typeof folder.currentRevision === "number" &&
+    Number.isFinite(folder.currentRevision) &&
+    typeof folder.updatedAt === "string" &&
+    isDeletedAt(folder.deletedAt)
+  );
+}
+
+function isRemoteNoteRecord(value: unknown): value is NoteRecord {
+  if (!value || typeof value !== "object") return false;
+  const note = value as Record<string, unknown>;
+  return (
+    typeof note.id === "string" &&
+    isNonBlank(note.id) &&
+    typeof note.folderId === "string" &&
+    isNonBlank(note.folderId) &&
+    typeof note.title === "string" &&
+    typeof note.bodyMd === "string" &&
+    typeof note.bodyPlain === "string" &&
+    typeof note.currentRevision === "number" &&
+    Number.isFinite(note.currentRevision) &&
+    typeof note.updatedAt === "string" &&
+    isDeletedAt(note.deletedAt)
+  );
 }
 
 function isLegacyFolder(value: unknown): value is LegacyWorkspace["folders"][number] {
@@ -425,11 +470,12 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       db.close();
       return;
     }
-    if (!isValidBootstrapResponse(bootstrap)) {
+    const existingFolderIds = new Set(localFolders.map((folder) => folder.id));
+    if (!isValidBootstrapResponse(bootstrap, existingFolderIds)) {
       throw new Error("Invalid bootstrap response");
     }
-    const serverNotes = bootstrap.notes as NoteRecord[];
-    const serverFolders = bootstrap.folders as FolderRecord[];
+    const serverNotes = bootstrap.notes;
+    const serverFolders = bootstrap.folders;
 
     await db.transaction("rw", db.notes, db.folders, db.pendingChanges, db.syncState, async () => {
       await concurrencyHooks.beforeRemoteWrite?.();
