@@ -11,7 +11,7 @@ vi.mock("../src/lib/sync", () => ({
   }),
 }));
 
-vi.mock("../src/components/editor/MarkeanEditor", () => ({
+vi.mock("../src/features/notes/components/editor/MarkeanEditor", () => ({
   MarkeanEditor: ({
     content,
     onChange,

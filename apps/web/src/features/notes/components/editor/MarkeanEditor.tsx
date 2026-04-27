@@ -4,7 +4,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { livePreviewPlugin } from "./live-preview";
-import "../../styles/editor.css";
+import "../../../../styles/editor.css";
 
 type MarkeanEditorProps = {
   content: string;

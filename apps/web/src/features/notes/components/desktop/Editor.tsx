@@ -1,11 +1,11 @@
-import { useI18n } from "../../i18n";
-import type { SyncStatus, WorkspaceNote } from "../../lib/storage";
+import type { NoteRecord } from "@markean/domain";
+import { useI18n } from "../../../../i18n";
 import { MarkeanEditor } from "../editor/MarkeanEditor";
-import { EmptyNoteIcon, SyncIcon } from "../shared/Icons";
+import { EmptyNoteIcon } from "../shared/Icons";
+import { SyncStatusBadge } from "../shared/SyncStatusBadge";
 
 type EditorProps = {
-  note: WorkspaceNote | null;
-  syncStatus: SyncStatus;
+  note: NoteRecord | null;
   onChangeBody: (body: string) => void;
 };
 
@@ -19,7 +19,7 @@ function formatModifiedDate(isoString: string, locale: string): string {
   }).format(new Date(isoString));
 }
 
-export function Editor({ note, syncStatus, onChangeBody }: EditorProps) {
+export function Editor({ note, onChangeBody }: EditorProps) {
   const { t, locale } = useI18n();
 
   if (!note) {
@@ -36,24 +36,14 @@ export function Editor({ note, syncStatus, onChangeBody }: EditorProps) {
     );
   }
 
-  const syncLabel =
-    syncStatus === "syncing"
-      ? t("editor.syncing")
-      : syncStatus === "unsynced"
-        ? t("editor.unsynced")
-        : t("editor.synced");
-
   return (
     <div className="editor-pane">
       <div className="editor-meta">
         <span>{formatModifiedDate(note.updatedAt, locale)}</span>
-        <span className="sync-badge">
-          <SyncIcon />
-          {syncLabel}
-        </span>
+        <SyncStatusBadge />
       </div>
       <div className="editor-scroll">
-        <MarkeanEditor key={note.id} content={note.body} onChange={onChangeBody} />
+        <MarkeanEditor key={note.id} content={note.bodyMd} onChange={onChangeBody} />
       </div>
     </div>
   );

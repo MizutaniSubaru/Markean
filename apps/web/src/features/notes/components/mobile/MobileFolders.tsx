@@ -1,6 +1,6 @@
-import { useI18n } from "../../i18n";
+import { useI18n } from "../../../../i18n";
 import { ChevronIcon, ComposeIcon, SearchIcon } from "../shared/Icons";
-import "../../styles/mobile.css";
+import "../../../../styles/mobile.css";
 
 type MobileFolder = {
   id: string;

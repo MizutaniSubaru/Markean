@@ -3,7 +3,7 @@ import { markdownToPlainText } from "@markean/domain";
 import type { FolderRecord, NoteRecord } from "@markean/domain";
 import { queueChange } from "@markean/sync-core";
 import { createWebDatabase, type MarkeanWebDatabase } from "@markean/storage-web";
-import { getWelcomeNote } from "../components/shared/WelcomeNote";
+import { getWelcomeNote } from "../features/notes/components/shared/WelcomeNote";
 import { getAllFolders } from "../features/notes/persistence/folders.persistence";
 import { getDb, initDb } from "../features/notes/persistence/db";
 import { getAllNotes } from "../features/notes/persistence/notes.persistence";

@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Sidebar } from "../src/components/desktop/Sidebar";
+import { Sidebar } from "../src/features/notes/components/desktop/Sidebar";
 import { I18nProvider, createI18n } from "../src/i18n";
 
 type Folder = {

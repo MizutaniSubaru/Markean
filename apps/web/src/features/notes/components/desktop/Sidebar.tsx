@@ -3,7 +3,7 @@ import {
   PlusIcon,
   SearchIcon,
 } from "../shared/Icons";
-import { useI18n } from "../../i18n";
+import { useI18n } from "../../../../i18n";
 
 type SidebarFolder = {
   id: string;

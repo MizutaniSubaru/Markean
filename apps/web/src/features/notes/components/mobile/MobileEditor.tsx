@@ -1,12 +1,12 @@
-import type { WorkspaceNote } from "../../lib/storage";
-import { useI18n } from "../../i18n";
+import type { NoteRecord } from "@markean/domain";
+import { useI18n } from "../../../../i18n";
 import { MarkeanEditor } from "../editor/MarkeanEditor";
 import { BackIcon } from "../shared/Icons";
-import "../../styles/mobile.css";
+import "../../../../styles/mobile.css";
 
 type MobileEditorProps = {
   folderName: string;
-  note: WorkspaceNote;
+  note: NoteRecord;
   onBack: () => void;
   onChangeBody: (body: string) => void;
 };
@@ -39,7 +39,7 @@ export function MobileEditor({
       </div>
 
       <div className="mobile-editor">
-        <MarkeanEditor key={note.id} content={note.body} onChange={onChangeBody} />
+        <MarkeanEditor key={note.id} content={note.bodyMd} onChange={onChangeBody} />
       </div>
     </section>
   );

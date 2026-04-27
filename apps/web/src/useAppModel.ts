@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { getWelcomeNote } from "./components/shared/WelcomeNote";
+import { getWelcomeNote } from "./features/notes/components/shared/WelcomeNote";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { createI18n, detectLocale } from "./i18n";
 import {
