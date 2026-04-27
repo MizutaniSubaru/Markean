@@ -2543,6 +2543,96 @@ describe("bootstrapApp", () => {
     );
   });
 
+  it("does not advance cursor when remote records are skipped for pending creates", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "notes",
+      name: "Local pending folder",
+      sortOrder: 0,
+      currentRevision: 0,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const localNote: NoteRecord = {
+      id: "welcome-note",
+      folderId: localFolder.id,
+      title: "Local pending note",
+      bodyMd: "# Local pending",
+      bodyPlain: "Local pending",
+      currentRevision: 0,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.notes.put(localNote);
+    await localDb.syncState.put({ key: "syncCursor", value: "3" });
+    await queueChange(localDb, {
+      entityType: "folder",
+      entityId: localFolder.id,
+      operation: "create",
+      baseRevision: 0,
+    });
+    await queueChange(localDb, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "create",
+      baseRevision: 0,
+    });
+    localDb.close();
+
+    const remoteFolder: FolderRecord = {
+      ...localFolder,
+      name: "Remote folder",
+      currentRevision: 5,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+    };
+    const remoteNote: NoteRecord = {
+      ...localNote,
+      title: "Remote note",
+      bodyMd: "# Remote",
+      bodyPlain: "Remote",
+      currentRevision: 6,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [remoteFolder],
+          notes: [remoteNote],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+    await expect(db.notes.get(localNote.id)).resolves.toEqual(localNote);
+    const pendingChanges = await db.pendingChanges.toArray();
+    expect(pendingChanges).toHaveLength(2);
+    expect(pendingChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityType: "folder",
+          entityId: localFolder.id,
+          operation: "create",
+        }),
+        expect.objectContaining({
+          entityType: "note",
+          entityId: localNote.id,
+          operation: "create",
+        }),
+      ]),
+    );
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "3",
+    });
+  });
+
   it("merges remote records when same ID pending changes are for a different entity type", async () => {
     installStorageMock();
     const localDb = createWebDatabase("markean");
