@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 
 import type { FolderRecord, NoteRecord } from "@markean/domain";
+import { queueChange } from "@markean/sync-core";
 import { createWebDatabase, type MarkeanWebDatabase } from "@markean/storage-web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -12,7 +13,12 @@ import { useEditorStore } from "../src/features/notes/store/editor.store";
 import { useFoldersStore } from "../src/features/notes/store/folders.store";
 import { useNotesStore } from "../src/features/notes/store/notes.store";
 import { useSyncStore } from "../src/features/notes/store/sync.store";
-import { bootstrapApp, getScheduler, migrateFromLocalStorage } from "../src/app/bootstrap";
+import {
+  bootstrapApp,
+  getScheduler,
+  migrateFromLocalStorage,
+  resetSchedulerForTests,
+} from "../src/app/bootstrap";
 
 function installStorageMock() {
   const store = new Map<string, string>();
@@ -105,6 +111,25 @@ describe("migrateFromLocalStorage", () => {
     expect(folders).toHaveLength(1);
     expect(folders[0].id).toBe("notes");
 
+    const pendingChanges = await db.pendingChanges.toArray();
+    expect(pendingChanges).toHaveLength(2);
+    expect(pendingChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityType: "folder",
+          entityId: "notes",
+          operation: "create",
+          baseRevision: 0,
+        }),
+        expect.objectContaining({
+          entityType: "note",
+          entityId: "note_1",
+          operation: "create",
+          baseRevision: 0,
+        }),
+      ]),
+    );
+
     expect(storage.removeItem).toHaveBeenCalledWith("markean:workspace");
     expect(storage.removeItem).toHaveBeenCalledWith("markean:draft:note_1");
     expect(storage.removeItem).toHaveBeenCalledWith("markean:sync-status");
@@ -173,6 +198,45 @@ describe("migrateFromLocalStorage", () => {
     expect(storage.removeItem).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      "malformed folder",
+      {
+        folders: [{ id: 123, name: "Notes" }],
+        notes: [],
+        activeFolderId: "notes",
+        activeNoteId: "",
+      },
+    ],
+    [
+      "malformed note",
+      {
+        folders: [{ id: "notes", name: "Notes" }],
+        notes: [
+          {
+            id: "note_1",
+            folderId: "notes",
+            title: "Hello",
+            body: null,
+            updatedAt: "2026-04-21T09:00:00.000Z",
+          },
+        ],
+        activeFolderId: "notes",
+        activeNoteId: "note_1",
+      },
+    ],
+  ])("leaves malformed workspace entries untouched: %s", async (_name, payload) => {
+    const { storage, store } = installStorageMock();
+    store.set("markean:workspace", JSON.stringify(payload));
+
+    await migrateFromLocalStorage();
+
+    expect(await db.notes.toArray()).toEqual([]);
+    expect(await db.folders.toArray()).toEqual([]);
+    expect(await db.pendingChanges.toArray()).toEqual([]);
+    expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+
   it("skips migration when localStorage is unavailable", async () => {
     Object.defineProperty(window, "localStorage", {
       configurable: true,
@@ -190,8 +254,7 @@ describe("migrateFromLocalStorage", () => {
 
 describe("bootstrapApp", () => {
   afterEach(async () => {
-    const scheduler = getScheduler();
-    scheduler?.stop();
+    resetSchedulerForTests();
     try {
       await getDb().delete();
     } catch {
@@ -226,6 +289,25 @@ describe("bootstrapApp", () => {
       activeNoteId: "welcome-note",
     });
     expect(getScheduler()).not.toBeNull();
+
+    const pendingChanges = await db.pendingChanges.toArray();
+    expect(pendingChanges).toHaveLength(2);
+    expect(pendingChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityType: "folder",
+          entityId: "notes",
+          operation: "create",
+          baseRevision: 0,
+        }),
+        expect.objectContaining({
+          entityType: "note",
+          entityId: "welcome-note",
+          operation: "create",
+          baseRevision: 0,
+        }),
+      ]),
+    );
   });
 
   it("merges newer remote bootstrap records and stores the sync cursor", async () => {
@@ -270,5 +352,92 @@ describe("bootstrapApp", () => {
     });
     expect(useFoldersStore.getState().folders).toContainEqual(remoteFolder);
     expect(useNotesStore.getState().notes).toContainEqual(remoteNote);
+  });
+
+  it("does not overwrite local records with pending changes during remote bootstrap", async () => {
+    installStorageMock();
+    const localDb = createWebDatabase("markean");
+    const localFolder: FolderRecord = {
+      id: "shared-folder",
+      name: "Local folder",
+      sortOrder: 0,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const localNote: NoteRecord = {
+      id: "shared-note",
+      folderId: "shared-folder",
+      title: "Local note",
+      bodyMd: "# Local",
+      bodyPlain: "Local",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await localDb.folders.put(localFolder);
+    await localDb.notes.put(localNote);
+    await queueChange(localDb, {
+      entityType: "folder",
+      entityId: localFolder.id,
+      operation: "update",
+      baseRevision: localFolder.currentRevision,
+    });
+    await queueChange(localDb, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "update",
+      baseRevision: localNote.currentRevision,
+    });
+    localDb.close();
+
+    const remoteFolder: FolderRecord = {
+      ...localFolder,
+      name: "Remote folder",
+      currentRevision: 9,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+    };
+    const remoteNote: NoteRecord = {
+      ...localNote,
+      title: "Remote note",
+      bodyMd: "# Remote",
+      bodyPlain: "Remote",
+      currentRevision: 10,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [remoteFolder],
+          notes: [remoteNote],
+          syncCursor: 7,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(localFolder.id)).resolves.toEqual(localFolder);
+    await expect(db.notes.get(localNote.id)).resolves.toEqual(localNote);
+    const pendingChanges = await db.pendingChanges.toArray();
+    expect(pendingChanges).toHaveLength(2);
+    expect(pendingChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityType: "folder",
+          entityId: localFolder.id,
+          operation: "update",
+          baseRevision: localFolder.currentRevision,
+        }),
+        expect.objectContaining({
+          entityType: "note",
+          entityId: localNote.id,
+          operation: "update",
+          baseRevision: localNote.currentRevision,
+        }),
+      ]),
+    );
   });
 });

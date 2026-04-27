@@ -1,6 +1,7 @@
 import { createApiClient } from "@markean/api-client";
 import { markdownToPlainText } from "@markean/domain";
 import type { FolderRecord, NoteRecord } from "@markean/domain";
+import { queueChange } from "@markean/sync-core";
 import { createWebDatabase } from "@markean/storage-web";
 import { getWelcomeNote } from "../components/shared/WelcomeNote";
 import { getAllFolders } from "../features/notes/persistence/folders.persistence";
@@ -29,6 +30,24 @@ type LegacyWorkspace = {
   activeFolderId: string;
   activeNoteId: string;
 };
+
+function isLegacyFolder(value: unknown): value is LegacyWorkspace["folders"][number] {
+  if (!value || typeof value !== "object") return false;
+  const folder = value as Record<string, unknown>;
+  return typeof folder.id === "string" && typeof folder.name === "string";
+}
+
+function isLegacyNote(value: unknown): value is LegacyWorkspace["notes"][number] {
+  if (!value || typeof value !== "object") return false;
+  const note = value as Record<string, unknown>;
+  return (
+    typeof note.id === "string" &&
+    typeof note.folderId === "string" &&
+    typeof note.title === "string" &&
+    typeof note.body === "string" &&
+    typeof note.updatedAt === "string"
+  );
+}
 
 function getLocalStorage(): Storage | null {
   if (typeof window === "undefined") return null;
@@ -78,6 +97,8 @@ export async function migrateFromLocalStorage(): Promise<void> {
 
   if (!workspace || typeof workspace !== "object") return;
   if (!Array.isArray(workspace.folders) || !Array.isArray(workspace.notes)) return;
+  if (!workspace.folders.every(isLegacyFolder)) return;
+  if (!workspace.notes.every(isLegacyNote)) return;
 
   const now = new Date().toISOString();
   const folders: FolderRecord[] = workspace.folders.map((folder, index) => ({
@@ -104,9 +125,25 @@ export async function migrateFromLocalStorage(): Promise<void> {
     };
   });
 
-  await db.transaction("rw", db.folders, db.notes, async () => {
+  await db.transaction("rw", db.folders, db.notes, db.pendingChanges, async () => {
     await db.folders.bulkPut(folders);
     await db.notes.bulkPut(notes);
+    for (const folder of folders) {
+      await queueChange(db, {
+        entityType: "folder",
+        entityId: folder.id,
+        operation: "create",
+        baseRevision: 0,
+      });
+    }
+    for (const note of notes) {
+      await queueChange(db, {
+        entityType: "note",
+        entityId: note.id,
+        operation: "create",
+        baseRevision: 0,
+      });
+    }
   });
 
   removeLocalStorage(WORKSPACE_KEY);
@@ -134,7 +171,7 @@ async function ensureWelcomeNote(): Promise<void> {
   const folderId = "notes";
   const now = new Date().toISOString();
 
-  await db.transaction("rw", db.folders, db.notes, async () => {
+  await db.transaction("rw", db.folders, db.notes, db.pendingChanges, async () => {
     await db.folders.put({
       id: folderId,
       name: locale.startsWith("zh") ? "笔记" : "Notes",
@@ -142,6 +179,12 @@ async function ensureWelcomeNote(): Promise<void> {
       currentRevision: 0,
       updatedAt: now,
       deletedAt: null,
+    });
+    await queueChange(db, {
+      entityType: "folder",
+      entityId: folderId,
+      operation: "create",
+      baseRevision: 0,
     });
 
     await db.notes.put({
@@ -154,6 +197,12 @@ async function ensureWelcomeNote(): Promise<void> {
       updatedAt: now,
       deletedAt: null,
     });
+    await queueChange(db, {
+      entityType: "note",
+      entityId: "welcome-note",
+      operation: "create",
+      baseRevision: 0,
+    });
   });
 }
 
@@ -161,6 +210,11 @@ let scheduler: ReturnType<typeof createSyncScheduler> | null = null;
 
 export function getScheduler(): ReturnType<typeof createSyncScheduler> | null {
   return scheduler;
+}
+
+export function resetSchedulerForTests(): void {
+  scheduler?.stop();
+  scheduler = null;
 }
 
 export async function bootstrapApp(baseUrl = ""): Promise<void> {
@@ -200,8 +254,11 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       ? (bootstrap.folders as FolderRecord[])
       : [];
 
-    await db.transaction("rw", db.notes, db.folders, db.syncState, async () => {
+    await db.transaction("rw", db.notes, db.folders, db.pendingChanges, db.syncState, async () => {
       for (const note of serverNotes) {
+        const pendingCount = await db.pendingChanges.where("entityId").equals(note.id).count();
+        if (pendingCount > 0) continue;
+
         const local = await db.notes.get(note.id);
         if (!local || (note.currentRevision ?? 0) > (local.currentRevision ?? 0)) {
           await db.notes.put(note);
@@ -209,6 +266,9 @@ export async function bootstrapApp(baseUrl = ""): Promise<void> {
       }
 
       for (const folder of serverFolders) {
+        const pendingCount = await db.pendingChanges.where("entityId").equals(folder.id).count();
+        if (pendingCount > 0) continue;
+
         const local = await db.folders.get(folder.id);
         if (!local || (folder.currentRevision ?? 0) > (local.currentRevision ?? 0)) {
           await db.folders.put(folder);
