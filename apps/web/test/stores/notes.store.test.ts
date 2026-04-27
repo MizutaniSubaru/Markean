@@ -48,6 +48,15 @@ describe("notes.store", () => {
     expect(useNotesStore.getState().notes).toEqual([note1]);
   });
 
+  it("isolates loaded notes from source record mutation", () => {
+    const sourceNote = { ...note1 };
+
+    useNotesStore.getState().loadNotes([sourceNote]);
+    sourceNote.title = "Mutated outside store";
+
+    expect(useNotesStore.getState().notes[0]).toEqual(note1);
+  });
+
   it("adds a note optimistically", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
@@ -87,6 +96,37 @@ describe("notes.store", () => {
     expect(notes[1]).toEqual(note2);
   });
 
+  it("updates a note title without changing bodyPlain", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    useNotesStore.getState().loadNotes([note1]);
+
+    useNotesStore.getState().updateNote("note_1", { title: "Renamed" });
+
+    expect(useNotesStore.getState().notes[0]).toEqual({
+      ...note1,
+      title: "Renamed",
+      bodyPlain: "Test",
+      updatedAt: "2026-04-27T12:34:56.789Z",
+    });
+  });
+
+  it("updates a note folder without changing title or bodyPlain", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    useNotesStore.getState().loadNotes([note1]);
+
+    useNotesStore.getState().updateNote("note_1", { folderId: "folder_2" });
+
+    expect(useNotesStore.getState().notes[0]).toEqual({
+      ...note1,
+      folderId: "folder_2",
+      title: "Test",
+      bodyPlain: "Test",
+      updatedAt: "2026-04-27T12:34:56.789Z",
+    });
+  });
+
   it("soft-deletes a note optimistically", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
@@ -111,5 +151,23 @@ describe("notes.store", () => {
     };
     useNotesStore.getState().addConflictCopy(copy);
     expect(useNotesStore.getState().notes).toEqual([copy, note1]);
+  });
+
+  it("isolates conflict copies from source record mutation", () => {
+    useNotesStore.getState().loadNotes([note1]);
+    const copy: NoteRecord = {
+      ...note1,
+      id: "note_conflict_copy",
+      title: "Test (conflict copy)",
+    };
+
+    useNotesStore.getState().addConflictCopy(copy);
+    copy.title = "Mutated outside store";
+
+    expect(useNotesStore.getState().notes[0]).toEqual({
+      ...note1,
+      id: "note_conflict_copy",
+      title: "Test (conflict copy)",
+    });
   });
 });

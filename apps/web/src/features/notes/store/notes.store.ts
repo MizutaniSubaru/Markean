@@ -21,7 +21,7 @@ function createId() {
 export const useNotesStore = create<NotesState>((set) => ({
   notes: [],
 
-  loadNotes: (notes) => set({ notes: [...notes] }),
+  loadNotes: (notes) => set({ notes: notes.map((note) => ({ ...note })) }),
 
   addNote: (folderId) => {
     const note: NoteRecord = {
@@ -57,5 +57,5 @@ export const useNotesStore = create<NotesState>((set) => ({
       ),
     })),
 
-  addConflictCopy: (note) => set((state) => ({ notes: [note, ...state.notes] })),
+  addConflictCopy: (note) => set((state) => ({ notes: [{ ...note }, ...state.notes] })),
 }));
