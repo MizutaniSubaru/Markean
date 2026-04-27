@@ -317,6 +317,58 @@ describe("App store integration", () => {
     expect(schedulerState.scheduler?.requestSync).not.toHaveBeenCalled();
   });
 
+  it("does not create notes inside a folder whose create persistence is still pending", async () => {
+    const existingFolder = folder({ id: "folder_notes", name: "Notes" });
+    const existingNote = note({
+      id: "note_existing",
+      folderId: "folder_notes",
+      title: "Existing note",
+      bodyMd: "# Existing note",
+    });
+    const folderCreate = deferred<void>();
+    useFoldersStore.getState().loadFolders([existingFolder]);
+    useNotesStore.getState().loadNotes([existingNote]);
+    useEditorStore.setState({
+      activeFolderId: "folder_notes",
+      activeNoteId: "note_existing",
+      mobileView: "editor",
+      newNoteId: null,
+    });
+    persistence.createFolder.mockReturnValueOnce(folderCreate.promise);
+    vi.spyOn(window, "prompt").mockReturnValue("Drafts");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "New Folder" }));
+
+    const pendingFolderId = useEditorStore.getState().activeFolderId;
+    expect(pendingFolderId).not.toBe("folder_notes");
+    expect(useFoldersStore.getState().folders.map((existing) => existing.id)).toEqual([
+      "folder_notes",
+      pendingFolderId,
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "New Note" }));
+
+    expect(persistence.createNote).not.toHaveBeenCalled();
+    expect(useNotesStore.getState().notes).toEqual([existingNote]);
+
+    folderCreate.reject(new Error("folder write failed"));
+
+    await waitFor(() => {
+      expect(useFoldersStore.getState().folders).toEqual([existingFolder]);
+      expect(useNotesStore.getState().notes).toEqual([existingNote]);
+      expect(useEditorStore.getState()).toMatchObject({
+        activeFolderId: "folder_notes",
+        activeNoteId: "note_existing",
+        newNoteId: null,
+      });
+    });
+    expect(persistence.createNote).not.toHaveBeenCalled();
+    expect(useSyncStore.getState().status).toBe("idle");
+    expect(schedulerState.scheduler?.requestSync).not.toHaveBeenCalled();
+  });
+
   it("does not restore a removed folder from overlapping optimistic folder rollbacks", async () => {
     const existingFolder = folder({ id: "folder_notes", name: "Notes" });
     const existingNote = note({

@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { FolderRecord, NoteRecord } from "@markean/domain";
 import { Editor } from "../features/notes/components/desktop/Editor";
 import { NoteList } from "../features/notes/components/desktop/NoteList";
@@ -91,6 +91,7 @@ function AppShell() {
   const setNewNoteId = useEditorStore((state) => state.setNewNoteId);
   const editorActions = useEditorActions();
   const { notesInScope, sections: noteSections } = useNoteList(i18n.locale, i18n.t);
+  const pendingFolderIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
     document.documentElement.lang = i18n.locale.startsWith("zh") ? "zh-CN" : "en";
@@ -155,6 +156,7 @@ function AppShell() {
 
     const previousEditorState = useEditorStore.getState();
     const folder = addFolder(name);
+    pendingFolderIdsRef.current.add(folder.id);
     useEditorStore.setState({
       activeFolderId: folder.id,
       activeNoteId: "",
@@ -162,9 +164,13 @@ function AppShell() {
       mobileView: isMobile ? "notes" : "editor",
     });
     persistCreatedEntity(
-      () => persistFolderCreate(folder),
+      async () => {
+        await persistFolderCreate(folder);
+        pendingFolderIdsRef.current.delete(folder.id);
+      },
       "Failed to persist created folder",
       () => {
+        pendingFolderIdsRef.current.delete(folder.id);
         useFoldersStore.setState((state) => ({
           folders: state.folders.filter((existing) => existing.id !== folder.id),
         }));
@@ -183,6 +189,7 @@ function AppShell() {
         ? activeFolders[0]?.id
         : activeFolder?.id ?? activeFolderId ?? activeFolders[0]?.id;
     if (!folderId) return;
+    if (pendingFolderIdsRef.current.has(folderId)) return;
 
     const previousEditorState = useEditorStore.getState();
     const note = addNote(folderId);
