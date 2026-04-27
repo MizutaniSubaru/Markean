@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSyncStore } from "../../src/features/notes/store/sync.store";
 
 describe("sync.store", () => {
   afterEach(() => {
+    vi.useRealTimers();
     useSyncStore.setState({
       status: "idle",
       isOnline: true,
@@ -25,10 +26,14 @@ describe("sync.store", () => {
   });
 
   it("transitions to synced and records timestamp", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+
     useSyncStore.getState().markSynced();
     const state = useSyncStore.getState();
+
     expect(state.status).toBe("idle");
-    expect(state.lastSyncedAt).not.toBeNull();
+    expect(state.lastSyncedAt).toBe("2026-04-27T12:34:56.789Z");
   });
 
   it("transitions to error", () => {
