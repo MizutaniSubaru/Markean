@@ -155,4 +155,38 @@ describe("useEditorActions", () => {
       bodyPlain: "",
     });
   });
+
+  it("does nothing for a missing note without sync side effects", async () => {
+    schedulerState.scheduler = { requestSync: vi.fn() };
+    const { result } = renderHook(() => useEditorActions());
+
+    await result.current.changeBody("missing", "# ghost");
+
+    expect(useNotesStore.getState().notes).toEqual([]);
+    await expect(getDb().notes.toArray()).resolves.toEqual([]);
+    await expect(getDb().pendingChanges.toArray()).resolves.toEqual([]);
+    expect(useSyncStore.getState().status).toBe("idle");
+    expect(schedulerState.scheduler.requestSync).not.toHaveBeenCalled();
+  });
+
+  it("rolls back the optimistic store update when persistence fails", async () => {
+    const existing = note({ id: "note_1" });
+    await db.notes.put(existing);
+    db.pendingChanges.hook("creating", () => {
+      throw new Error("pending change failed");
+    });
+    useNotesStore.getState().loadNotes([existing]);
+    schedulerState.scheduler = { requestSync: vi.fn() };
+    const { result } = renderHook(() => useEditorActions());
+
+    await expect(result.current.changeBody("note_1", "# Failed\nbody")).rejects.toThrow(
+      "pending change failed",
+    );
+
+    expect(useNotesStore.getState().notes).toEqual([existing]);
+    await expect(getDb().notes.get("note_1")).resolves.toEqual(existing);
+    await expect(getDb().pendingChanges.toArray()).resolves.toEqual([]);
+    expect(useSyncStore.getState().status).toBe("idle");
+    expect(schedulerState.scheduler.requestSync).not.toHaveBeenCalled();
+  });
 });

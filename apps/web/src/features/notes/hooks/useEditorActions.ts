@@ -22,12 +22,24 @@ export function useEditorActions(): EditorActions {
 
   return {
     async changeBody(noteId, bodyMd) {
+      const existing = useNotesStore.getState().notes.find((note) => note.id === noteId);
+      if (!existing) return;
+
+      const previousNote = { ...existing };
       const title = deriveTitleFromBody(bodyMd);
       const bodyPlain = markdownToPlainText(bodyMd);
 
       updateNote(noteId, { bodyMd, title });
+      try {
+        await persistNoteUpdate(noteId, { bodyMd, bodyPlain, title });
+      } catch (error) {
+        useNotesStore.setState((state) => ({
+          notes: state.notes.map((note) => (note.id === noteId ? previousNote : note)),
+        }));
+        throw error;
+      }
+
       useSyncStore.getState().markUnsynced();
-      await persistNoteUpdate(noteId, { bodyMd, bodyPlain, title });
       getScheduler()?.requestSync();
     },
   };
