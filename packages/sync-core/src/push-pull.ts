@@ -66,6 +66,8 @@ type PreparedPendingChange = {
   noteFolderId: string | null;
 };
 
+type DependencyOrder = -1 | 0 | 1;
+
 function shouldApply(options?: SyncApplyOptions): boolean {
   return options?.shouldApply?.() ?? true;
 }
@@ -112,10 +114,10 @@ function payloadString(
   return typeof value === "string" ? value : null;
 }
 
-function compareLegacyFolderDeleteCausality(
+function getLegacyFolderDeleteDependencyOrder(
   a: PreparedPendingChange,
   b: PreparedPendingChange,
-): number {
+): DependencyOrder {
   if (getQueuedOrder(a.change) !== null || getQueuedOrder(b.change) !== null) return 0;
 
   if (
@@ -139,10 +141,10 @@ function compareLegacyFolderDeleteCausality(
   return 0;
 }
 
-function compareKnownCausality(
+function getKnownDependencyOrder(
   a: PreparedPendingChange,
   b: PreparedPendingChange,
-): number {
+): DependencyOrder {
   if (a.change.entityType === b.change.entityType && a.change.entityId === b.change.entityId) {
     if (a.change.operation === "create" && b.change.operation !== "create") return -1;
     if (b.change.operation === "create" && a.change.operation !== "create") return 1;
@@ -199,24 +201,66 @@ function compareDeterministicFallback(
   return a.change.clientChangeId.localeCompare(b.change.clientChangeId);
 }
 
-function comparePreparedPendingChanges(
-  a: PreparedPendingChange,
-  b: PreparedPendingChange,
-): number {
-  const causalOrder = compareKnownCausality(a, b);
-  if (causalOrder !== 0) return causalOrder;
-
+function comparePendingChangeBaseOrder(a: PreparedPendingChange, b: PreparedPendingChange): number {
   const queuedOrder = compareQueueOrder(a, b);
   if (queuedOrder !== 0) return queuedOrder;
-
-  const legacyFolderDeleteOrder = compareLegacyFolderDeleteCausality(a, b);
-  if (legacyFolderDeleteOrder !== 0) return legacyFolderDeleteOrder;
 
   return compareDeterministicFallback(a, b);
 }
 
+function getDependencyOrder(a: PreparedPendingChange, b: PreparedPendingChange): DependencyOrder {
+  const knownOrder = getKnownDependencyOrder(a, b);
+  if (knownOrder !== 0) return knownOrder;
+
+  return getLegacyFolderDeleteDependencyOrder(a, b);
+}
+
 function orderPendingChanges(pending: PreparedPendingChange[]): PreparedPendingChange[] {
-  return [...pending].sort(comparePreparedPendingChanges);
+  const baseOrdered = [...pending].sort(comparePendingChangeBaseOrder);
+  const outgoingDependencies = baseOrdered.map(() => new Set<number>());
+  const inDegree = baseOrdered.map(() => 0);
+
+  const addDependency = (beforeIndex: number, afterIndex: number): void => {
+    const beforeDependencies = outgoingDependencies[beforeIndex];
+    if (!beforeDependencies || beforeIndex === afterIndex || beforeDependencies.has(afterIndex)) {
+      return;
+    }
+    beforeDependencies.add(afterIndex);
+    inDegree[afterIndex] = (inDegree[afterIndex] ?? 0) + 1;
+  };
+
+  for (let leftIndex = 0; leftIndex < baseOrdered.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < baseOrdered.length; rightIndex += 1) {
+      const dependencyOrder = getDependencyOrder(baseOrdered[leftIndex]!, baseOrdered[rightIndex]!);
+      if (dependencyOrder < 0) {
+        addDependency(leftIndex, rightIndex);
+      } else if (dependencyOrder > 0) {
+        addDependency(rightIndex, leftIndex);
+      }
+    }
+  }
+
+  const emitted = baseOrdered.map(() => false);
+  const ordered: PreparedPendingChange[] = [];
+
+  while (ordered.length < baseOrdered.length) {
+    const nextIndex = inDegree.findIndex((degree, index) => degree === 0 && !emitted[index]);
+    if (nextIndex === -1) {
+      // Keep legacy sync deterministic even if unexpected data produces a dependency cycle.
+      for (const [index, prepared] of baseOrdered.entries()) {
+        if (!emitted[index]) ordered.push(prepared);
+      }
+      break;
+    }
+
+    emitted[nextIndex] = true;
+    ordered.push(baseOrdered[nextIndex]!);
+    for (const dependentIndex of outgoingDependencies[nextIndex] ?? []) {
+      inDegree[dependentIndex] = (inDegree[dependentIndex] ?? 0) - 1;
+    }
+  }
+
+  return ordered;
 }
 
 let lastQueuedOrder = 0;
