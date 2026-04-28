@@ -21,27 +21,57 @@ export const syncRoutes = new Hono<AuthEnv>()
       entityId: string;
       serverRevision: number;
     }> = [];
+    let hasMissingUpdateTarget = false;
 
     for (const change of body.changes) {
-      if (change.operation !== "update") continue;
+      if (change.operation !== "update" && change.operation !== "delete") continue;
+
+      const existingAcceptedChange = await db
+        .prepare(
+          `SELECT 1 AS found
+           FROM sync_events
+           WHERE user_id = ?
+             AND client_change_id = ?
+             AND entity_type = ?
+             AND entity_id = ?
+             AND operation = ?
+           LIMIT 1`,
+        )
+        .bind(
+          userId,
+          change.clientChangeId,
+          change.entityType,
+          change.entityId,
+          change.operation,
+        )
+        .first<{ found: number }>();
+
+      if (existingAcceptedChange) continue;
 
       const table = change.entityType === "note" ? "notes" : "folders";
-      const currentNote = await db
+      const currentEntity = await db
         .prepare(
-          `SELECT current_revision AS currentRevision
+          `SELECT
+             current_revision AS currentRevision,
+             deleted_at AS deletedAt
            FROM ${table}
            WHERE id = ? AND user_id = ?`,
         )
         .bind(change.entityId, userId)
-        .first<{ currentRevision: number }>();
+        .first<{ currentRevision: number; deletedAt: string | null }>();
 
-      const serverRevision = currentNote?.currentRevision ?? 0;
+      const serverRevision = currentEntity?.currentRevision ?? 0;
       if (serverRevision > change.baseRevision) {
         conflicts.push({
           entityType: change.entityType,
           entityId: change.entityId,
           serverRevision,
         });
+        continue;
+      }
+
+      if (change.operation === "update" && (!currentEntity || currentEntity.deletedAt !== null)) {
+        hasMissingUpdateTarget = true;
       }
     }
 
@@ -53,6 +83,10 @@ export const syncRoutes = new Hono<AuthEnv>()
         },
         409,
       );
+    }
+
+    if (hasMissingUpdateTarget) {
+      return c.json({ error: "sync_push_failed" }, 500);
     }
 
     const coordinator = c.env.SYNC_COORDINATOR.getByName(userId);
