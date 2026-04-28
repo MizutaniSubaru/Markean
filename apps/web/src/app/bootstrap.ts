@@ -527,18 +527,26 @@ async function removeUntouchedBootstrapWelcomeRecords(
     "note",
     WELCOME_NOTE_ID,
   );
-  if (
-    !isUntouchedBootstrapWelcomeFolder(folder) ||
-    !isUntouchedBootstrapWelcomeNote(note) ||
-    !folderCreateChange ||
-    !noteCreateChange
-  ) {
+  const canCleanBootstrapFolder =
+    isUntouchedBootstrapWelcomeFolder(folder) && folderCreateChange !== null;
+  if (!canCleanBootstrapFolder) {
     return;
   }
 
-  const changeIdsToDelete = [noteCreateChange.clientChangeId];
+  const canRemoveWelcomeNote =
+    isUntouchedBootstrapWelcomeNote(note) && noteCreateChange !== null;
   const shouldPreserveLocalFolder = otherActiveNotesInWelcomeFolder > 0;
-  const shouldDropFolderCreate = !shouldPreserveLocalFolder || remoteWelcomeFolder !== undefined;
+  const shouldDropFolderCreate =
+    remoteWelcomeFolder !== undefined ||
+    (canRemoveWelcomeNote && !shouldPreserveLocalFolder);
+  if (!canRemoveWelcomeNote && !shouldDropFolderCreate) {
+    return;
+  }
+
+  const changeIdsToDelete: string[] = [];
+  if (canRemoveWelcomeNote && noteCreateChange) {
+    changeIdsToDelete.push(noteCreateChange.clientChangeId);
+  }
   if (shouldDropFolderCreate) {
     changeIdsToDelete.push(folderCreateChange.clientChangeId);
   }
@@ -548,15 +556,19 @@ async function removeUntouchedBootstrapWelcomeRecords(
     .anyOf(changeIdsToDelete)
     .delete();
   assertShouldApplyBootstrap(options);
-  await db.notes.delete(WELCOME_NOTE_ID);
-  assertShouldApplyBootstrap(options);
-  if (shouldPreserveLocalFolder) {
-    if (remoteWelcomeFolder) {
-      await db.folders.put(remoteWelcomeFolder);
-      assertShouldApplyBootstrap(options);
-    }
+
+  if (canRemoveWelcomeNote) {
+    await db.notes.delete(WELCOME_NOTE_ID);
+    assertShouldApplyBootstrap(options);
+  }
+
+  if (remoteWelcomeFolder) {
+    await db.folders.put(remoteWelcomeFolder);
+    assertShouldApplyBootstrap(options);
     return;
   }
+
+  if (shouldPreserveLocalFolder) return;
 
   await db.folders.delete(WELCOME_FOLDER_ID);
   assertShouldApplyBootstrap(options);
