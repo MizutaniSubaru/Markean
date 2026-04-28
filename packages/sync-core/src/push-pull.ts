@@ -60,6 +60,11 @@ type SyncApplyOptions = {
   shouldApply?: () => boolean;
 };
 
+type PreparedPendingChange = {
+  change: PendingChange;
+  payload: Record<string, unknown> | null;
+};
+
 function shouldApply(options?: SyncApplyOptions): boolean {
   return options?.shouldApply?.() ?? true;
 }
@@ -88,20 +93,99 @@ function getQueuedOrder(change: PendingChange): number | null {
     : null;
 }
 
-function comparePendingChangesByQueueOrder(a: PendingChange, b: PendingChange): number {
-  const aQueuedOrder = getQueuedOrder(a);
-  const bQueuedOrder = getQueuedOrder(b);
+function operationRank(operation: PendingChange["operation"]): number {
+  if (operation === "create") return 0;
+  if (operation === "update") return 1;
+  return 2;
+}
+
+function entityTypeRank(entityType: PendingChange["entityType"]): number {
+  return entityType === "folder" ? 0 : 1;
+}
+
+function payloadString(
+  prepared: PreparedPendingChange,
+  field: string,
+): string | null {
+  const value = prepared.payload?.[field];
+  return typeof value === "string" ? value : null;
+}
+
+function compareKnownCausality(
+  a: PreparedPendingChange,
+  b: PreparedPendingChange,
+): number {
+  if (a.change.entityType === b.change.entityType && a.change.entityId === b.change.entityId) {
+    if (a.change.operation === "create" && b.change.operation !== "create") return -1;
+    if (b.change.operation === "create" && a.change.operation !== "create") return 1;
+  }
+
+  if (
+    a.change.entityType === "folder" &&
+    a.change.operation === "create" &&
+    b.change.entityType === "note" &&
+    b.change.operation === "create" &&
+    payloadString(b, "folderId") === a.change.entityId
+  ) {
+    return -1;
+  }
+
+  if (
+    b.change.entityType === "folder" &&
+    b.change.operation === "create" &&
+    a.change.entityType === "note" &&
+    a.change.operation === "create" &&
+    payloadString(a, "folderId") === b.change.entityId
+  ) {
+    return 1;
+  }
+
+  return 0;
+}
+
+function compareQueueOrder(a: PreparedPendingChange, b: PreparedPendingChange): number {
+  const aQueuedOrder = getQueuedOrder(a.change);
+  const bQueuedOrder = getQueuedOrder(b.change);
 
   if (aQueuedOrder === null && bQueuedOrder === null) return 0;
   if (aQueuedOrder === null) return -1;
   if (bQueuedOrder === null) return 1;
-  if (aQueuedOrder !== bQueuedOrder) return aQueuedOrder - bQueuedOrder;
-
-  return a.clientChangeId.localeCompare(b.clientChangeId);
+  return aQueuedOrder - bQueuedOrder;
 }
 
-function orderPendingChanges(pending: PendingChange[]): PendingChange[] {
-  return [...pending].sort(comparePendingChangesByQueueOrder);
+function compareDeterministicFallback(
+  a: PreparedPendingChange,
+  b: PreparedPendingChange,
+): number {
+  const entityTypeDifference =
+    entityTypeRank(a.change.entityType) - entityTypeRank(b.change.entityType);
+  if (entityTypeDifference !== 0) return entityTypeDifference;
+
+  const entityIdDifference = a.change.entityId.localeCompare(b.change.entityId);
+  if (entityIdDifference !== 0) return entityIdDifference;
+
+  const operationDifference =
+    operationRank(a.change.operation) - operationRank(b.change.operation);
+  if (operationDifference !== 0) return operationDifference;
+
+  return a.change.clientChangeId.localeCompare(b.change.clientChangeId);
+}
+
+function comparePreparedPendingChanges(
+  a: PreparedPendingChange,
+  b: PreparedPendingChange,
+): number {
+  const causalOrder = compareKnownCausality(a, b);
+  if (causalOrder !== 0) return causalOrder;
+
+  const queuedOrder = compareQueueOrder(a, b);
+  if (queuedOrder !== 0) return queuedOrder;
+
+  return compareDeterministicFallback(a, b);
+}
+
+function orderPendingChanges(pending: PreparedPendingChange[]): PreparedPendingChange[] {
+  return [...pending].sort(comparePreparedPendingChanges);
 }
 
 let lastQueuedOrder = 0;
@@ -207,11 +291,11 @@ export async function pushChanges(
   deviceId: string,
   options: SyncApplyOptions = {},
 ): Promise<{ conflicts: Array<{ entityType: string; entityId: string; serverRevision: number }> }> {
-  const pending = orderPendingChanges(await db.pendingChanges.toArray());
+  const pending = await db.pendingChanges.toArray();
   if (pending.length === 0) return { conflicts: [] };
   if (!shouldApply(options)) return { conflicts: [] };
 
-  const changes = [];
+  const preparedChanges: PreparedPendingChange[] = [];
   for (const p of pending) {
     let payload: Record<string, unknown> | null = null;
 
@@ -233,19 +317,24 @@ export async function pushChanges(
       }
     }
 
-    changes.push({
-      clientChangeId: p.clientChangeId,
-      entityType: p.entityType,
-      entityId: p.entityId,
-      operation: p.operation,
-      baseRevision: p.baseRevision,
-      payload,
-    });
+    preparedChanges.push({ change: p, payload });
   }
+
+  const orderedChanges = orderPendingChanges(preparedChanges);
+  const changes = orderedChanges.map(({ change, payload }) => ({
+    clientChangeId: change.clientChangeId,
+    entityType: change.entityType,
+    entityId: change.entityId,
+    operation: change.operation,
+    baseRevision: change.baseRevision,
+    payload,
+  }));
 
   if (!shouldApply(options)) return { conflicts: [] };
   const result = await apiClient.syncPush({ deviceId, changes });
-  const acceptedChanges = pending.slice(0, result.accepted.length);
+  const acceptedChanges = orderedChanges
+    .map(({ change }) => change)
+    .slice(0, result.accepted.length);
 
   await applyAcceptedPushChanges(db, acceptedChanges, result.accepted);
 
