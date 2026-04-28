@@ -82,6 +82,41 @@ function parseStoredCursor(value: string | undefined): number {
   return Number.isFinite(cursor) ? cursor : 0;
 }
 
+function getQueuedOrder(change: PendingChange): number | null {
+  return typeof change.queuedOrder === "number" && Number.isFinite(change.queuedOrder)
+    ? change.queuedOrder
+    : null;
+}
+
+function comparePendingChangesByQueueOrder(a: PendingChange, b: PendingChange): number {
+  const aQueuedOrder = getQueuedOrder(a);
+  const bQueuedOrder = getQueuedOrder(b);
+
+  if (aQueuedOrder === null && bQueuedOrder === null) return 0;
+  if (aQueuedOrder === null) return -1;
+  if (bQueuedOrder === null) return 1;
+  if (aQueuedOrder !== bQueuedOrder) return aQueuedOrder - bQueuedOrder;
+
+  return a.clientChangeId.localeCompare(b.clientChangeId);
+}
+
+function orderPendingChanges(pending: PendingChange[]): PendingChange[] {
+  return [...pending].sort(comparePendingChangesByQueueOrder);
+}
+
+let lastQueuedOrder = 0;
+
+async function nextQueuedOrder(db: SyncableDatabase): Promise<number> {
+  const pending = await db.pendingChanges.toArray();
+  const highestPersistedOrder = pending.reduce((highest, change) => {
+    const queuedOrder = getQueuedOrder(change);
+    return queuedOrder === null ? highest : Math.max(highest, queuedOrder);
+  }, 0);
+
+  lastQueuedOrder = Math.max(highestPersistedOrder, lastQueuedOrder, Date.now()) + 1;
+  return lastQueuedOrder;
+}
+
 function hasTransaction(
   db: SyncableDatabase,
 ): db is SyncableDatabase & { transaction: (...args: unknown[]) => Promise<unknown> } {
@@ -158,11 +193,11 @@ async function applyAcceptedPushChanges(
   });
 }
 
-export function queueChange(
+export async function queueChange(
   db: SyncableDatabase,
-  input: Omit<PendingChange, "clientChangeId">,
+  input: Omit<PendingChange, "clientChangeId" | "queuedOrder">,
 ): Promise<unknown> {
-  const change = createPendingChange(input);
+  const change = createPendingChange({ ...input, queuedOrder: await nextQueuedOrder(db) });
   return db.pendingChanges.put(change);
 }
 
@@ -172,7 +207,7 @@ export async function pushChanges(
   deviceId: string,
   options: SyncApplyOptions = {},
 ): Promise<{ conflicts: Array<{ entityType: string; entityId: string; serverRevision: number }> }> {
-  const pending = await db.pendingChanges.toArray();
+  const pending = orderPendingChanges(await db.pendingChanges.toArray());
   if (pending.length === 0) return { conflicts: [] };
   if (!shouldApply(options)) return { conflicts: [] };
 

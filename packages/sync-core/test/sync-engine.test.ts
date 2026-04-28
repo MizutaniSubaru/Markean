@@ -5,6 +5,11 @@ import { describe, expect, it } from "vitest";
 import { createWebDatabase } from "../../storage-web/src/index";
 import { getDeviceId, pullChanges, pushChanges, queueChange } from "../src/index";
 
+type QueuedPendingChange = PendingChange & { queuedOrder: number };
+type MaybeQueuedPendingChange = PendingChange & { queuedOrder?: number };
+type PushApiClient = Parameters<typeof pushChanges>[1];
+type PushInput = Parameters<PushApiClient["syncPush"]>[0];
+
 describe("sync engine queue", () => {
   it("accepts structural databases without syncState delete for queueing changes", async () => {
     const pendingChanges: PendingChange[] = [];
@@ -87,6 +92,31 @@ describe("sync engine queue", () => {
     expect(change?.operation).toBe("update");
     expect(change?.baseRevision).toBe(1);
     expect(change?.clientChangeId).toMatch(/^chg_/);
+  });
+
+  it("queues pending changes with increasing queued order", async () => {
+    const db = createWebDatabase(`test-markean-queue-order-${crypto.randomUUID()}`);
+
+    await queueChange(db, {
+      entityType: "note",
+      entityId: "note_first",
+      operation: "create",
+      baseRevision: 0,
+    });
+    await queueChange(db, {
+      entityType: "note",
+      entityId: "note_second",
+      operation: "update",
+      baseRevision: 1,
+    });
+
+    const changes = (await db.pendingChanges.toArray()) as MaybeQueuedPendingChange[];
+    const first = changes.find((change) => change.entityId === "note_first");
+    const second = changes.find((change) => change.entityId === "note_second");
+
+    expect(first?.queuedOrder).toEqual(expect.any(Number));
+    expect(second?.queuedOrder).toEqual(expect.any(Number));
+    expect(second!.queuedOrder).toBeGreaterThan(first!.queuedOrder!);
   });
 
   it("persists and reuses a generated device id", async () => {
@@ -264,6 +294,172 @@ describe("sync engine queue", () => {
     expect(result.conflicts).toEqual([
       { entityType: "note", entityId: "note_conflict", serverRevision: 5 },
     ]);
+  });
+
+  it("pushes note create before update when client change ids sort the other way", async () => {
+    const db = createWebDatabase(`test-markean-push-order-create-update-${crypto.randomUUID()}`);
+    const note: NoteRecord = {
+      id: "note_ordered",
+      folderId: "folder_1",
+      title: "Edited before first sync",
+      bodyMd: "Edited before first sync",
+      bodyPlain: "Edited before first sync",
+      currentRevision: 0,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    await db.notes.put(note);
+    await db.pendingChanges.bulkPut([
+      {
+        clientChangeId: "chg_z_create",
+        entityType: "note",
+        entityId: note.id,
+        operation: "create",
+        baseRevision: 0,
+        queuedOrder: 1,
+      },
+      {
+        clientChangeId: "chg_a_update",
+        entityType: "note",
+        entityId: note.id,
+        operation: "update",
+        baseRevision: 0,
+        queuedOrder: 2,
+      },
+    ] satisfies QueuedPendingChange[]);
+
+    let pushedOperations: string[] = [];
+    const apiClient: PushApiClient = {
+      async syncPush(input: PushInput) {
+        pushedOperations = input.changes.map((change) => change.operation);
+        return { accepted: [], conflicts: [] };
+      },
+      async syncPull() {
+        throw new Error("syncPull should not be called");
+      },
+    };
+
+    await pushChanges(db, apiClient, "device_1");
+
+    expect(pushedOperations).toEqual(["create", "update"]);
+  });
+
+  it("pushes note create before delete when client change ids sort the other way", async () => {
+    const db = createWebDatabase(`test-markean-push-order-create-delete-${crypto.randomUUID()}`);
+    const note: NoteRecord = {
+      id: "note_deleted_before_sync",
+      folderId: "folder_1",
+      title: "Deleted before first sync",
+      bodyMd: "Deleted before first sync",
+      bodyPlain: "Deleted before first sync",
+      currentRevision: 0,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: "2026-04-21T09:05:00.000Z",
+    };
+    await db.notes.put(note);
+    await db.pendingChanges.bulkPut([
+      {
+        clientChangeId: "chg_z_create",
+        entityType: "note",
+        entityId: note.id,
+        operation: "create",
+        baseRevision: 0,
+        queuedOrder: 1,
+      },
+      {
+        clientChangeId: "chg_a_delete",
+        entityType: "note",
+        entityId: note.id,
+        operation: "delete",
+        baseRevision: 0,
+        queuedOrder: 2,
+      },
+    ] satisfies QueuedPendingChange[]);
+
+    let pushedOperations: string[] = [];
+    const apiClient: PushApiClient = {
+      async syncPush(input: PushInput) {
+        pushedOperations = input.changes.map((change) => change.operation);
+        return { accepted: [], conflicts: [] };
+      },
+      async syncPull() {
+        throw new Error("syncPull should not be called");
+      },
+    };
+
+    await pushChanges(db, apiClient, "device_1");
+
+    expect(pushedOperations).toEqual(["create", "delete"]);
+  });
+
+  it("pushes folder create before child note create and reconciles accepted revisions in pushed order", async () => {
+    const db = createWebDatabase(`test-markean-push-order-folder-note-${crypto.randomUUID()}`);
+    const folder: FolderRecord = {
+      id: "folder_parent",
+      name: "Parent",
+      sortOrder: 1,
+      currentRevision: 0,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const note: NoteRecord = {
+      id: "note_child",
+      folderId: folder.id,
+      title: "Child",
+      bodyMd: "Child",
+      bodyPlain: "Child",
+      currentRevision: 0,
+      updatedAt: "2026-04-21T09:01:00.000Z",
+      deletedAt: null,
+    };
+    await db.folders.put(folder);
+    await db.notes.put(note);
+    await db.pendingChanges.bulkPut([
+      {
+        clientChangeId: "chg_z_folder_create",
+        entityType: "folder",
+        entityId: folder.id,
+        operation: "create",
+        baseRevision: 0,
+        queuedOrder: 1,
+      },
+      {
+        clientChangeId: "chg_a_note_create",
+        entityType: "note",
+        entityId: note.id,
+        operation: "create",
+        baseRevision: 0,
+        queuedOrder: 2,
+      },
+    ] satisfies QueuedPendingChange[]);
+
+    let pushedEntities: string[] = [];
+    const apiClient: PushApiClient = {
+      async syncPush(input: PushInput) {
+        pushedEntities = input.changes.map(
+          (change) => `${change.entityType}:${change.entityId}:${change.operation}`,
+        );
+        return {
+          accepted: [
+            { acceptedRevision: 101, cursor: 10 },
+            { acceptedRevision: 202, cursor: 11 },
+          ],
+          conflicts: [],
+        };
+      },
+      async syncPull() {
+        throw new Error("syncPull should not be called");
+      },
+    };
+
+    await pushChanges(db, apiClient, "device_1");
+
+    expect(pushedEntities).toEqual([
+      "folder:folder_parent:create",
+      "note:note_child:create",
+    ]);
+    await expect(db.folders.get(folder.id)).resolves.toMatchObject({ currentRevision: 101 });
+    await expect(db.notes.get(note.id)).resolves.toMatchObject({ currentRevision: 202 });
   });
 
   it("reconciles accepted push changes even when shouldApply becomes false after server acceptance", async () => {
