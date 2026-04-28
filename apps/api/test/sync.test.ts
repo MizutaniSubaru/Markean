@@ -1,5 +1,6 @@
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { SyncCoordinator } from "../src/durable/SyncCoordinator";
 import worker from "../src/index";
 
 const migrationStatements = [
@@ -50,7 +51,11 @@ const migrationStatements = [
   )`,
 ];
 
-const baseEnv = env as typeof env & { DB: D1Database; ALLOW_DEV_SESSION: string };
+const baseEnv = env as typeof env & {
+  DB: D1Database;
+  ALLOW_DEV_SESSION: string;
+  SYNC_COORDINATOR: DurableObjectNamespace<SyncCoordinator>;
+};
 const devEnv = { ...baseEnv, ALLOW_DEV_SESSION: "true" };
 
 async function getDevCookie(): Promise<string> {
@@ -451,6 +456,87 @@ describe("sync routes", () => {
       total: 1,
       distinctClientChangeIds: 1,
     });
+  });
+
+  it("rejects a direct coordinator stale note update without mutating or writing an event", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    await baseEnv.DB.batch([
+      baseEnv.DB.prepare(
+        `INSERT INTO folders (
+          id, user_id, name, sort_order, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("folder_1", "user_dev", "Inbox", 1, 1, now, now),
+      baseEnv.DB.prepare(
+        `INSERT INTO notes (
+          id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("note_1", "user_dev", "folder_1", "Server Title", "Server Body", "Server Body", 2, now, now),
+    ]);
+
+    const coordinator = baseEnv.SYNC_COORDINATOR.getByName("user_dev");
+    await expect(
+      runInDurableObject(coordinator, (instance) =>
+        instance.applyChange({
+          userId: "user_dev",
+          deviceId: "web_1",
+          clientChangeId: "chg_direct_stale_note_update",
+          entityType: "note",
+          entityId: "note_1",
+          operation: "update",
+          baseRevision: 1,
+          payload: {
+            folderId: "folder_1",
+            title: "Stale Client Title",
+            bodyMd: "Stale Client Body",
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      conflicts: [
+        {
+          entityType: "note",
+          entityId: "note_1",
+          serverRevision: 2,
+        },
+      ],
+    });
+
+    const note = await baseEnv.DB.prepare(
+      `SELECT
+         title,
+         body_md AS bodyMd,
+         body_plain AS bodyPlain,
+         current_revision AS currentRevision,
+         deleted_at AS deletedAt
+       FROM notes
+       WHERE id = ? AND user_id = ?`,
+    )
+      .bind("note_1", "user_dev")
+      .first<{
+        title: string;
+        bodyMd: string;
+        bodyPlain: string;
+        currentRevision: number;
+        deletedAt: string | null;
+      }>();
+
+    expect(note).toEqual({
+      title: "Server Title",
+      bodyMd: "Server Body",
+      bodyPlain: "Server Body",
+      currentRevision: 2,
+      deletedAt: null,
+    });
+
+    const eventCount = await baseEnv.DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM sync_events
+       WHERE user_id = ? AND client_change_id = ?`,
+    )
+      .bind("user_dev", "chg_direct_stale_note_update")
+      .first<{ count: number }>();
+
+    expect(eventCount?.count).toBe(0);
   });
 
   it("detects conflicts on update", async () => {
@@ -987,6 +1073,227 @@ describe("sync routes", () => {
       deletedAt: expect.any(String),
       currentRevision: 4,
     });
+  });
+
+  it("rejects folder delete before a later child note update without partial mutation", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    await baseEnv.DB.batch([
+      baseEnv.DB.prepare(
+        `INSERT INTO folders (
+          id, user_id, name, sort_order, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("folder_1", "user_dev", "Inbox", 1, 1, now, now),
+      baseEnv.DB.prepare(
+        `INSERT INTO notes (
+          id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("note_1", "user_dev", "folder_1", "Original", "Original Body", "Original Body", 1, now, now),
+    ]);
+
+    const response = await pushSync(
+      {
+        deviceId: "web_1",
+        changes: [
+          {
+            clientChangeId: "chg_folder_delete_before_child_update",
+            entityType: "folder",
+            entityId: "folder_1",
+            operation: "delete",
+            baseRevision: 1,
+            payload: null,
+          },
+          {
+            clientChangeId: "chg_child_update_after_folder_delete",
+            entityType: "note",
+            entityId: "note_1",
+            operation: "update",
+            baseRevision: 1,
+            payload: {
+              folderId: "folder_1",
+              title: "Updated Too Late",
+              bodyMd: "Updated Body",
+            },
+          },
+        ],
+      },
+      cookie,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      accepted: [],
+      conflicts: [
+        {
+          entityType: "note",
+          entityId: "note_1",
+          serverRevision: 1,
+        },
+      ],
+    });
+
+    const folder = await baseEnv.DB.prepare(
+      `SELECT deleted_at AS deletedAt, current_revision AS currentRevision
+       FROM folders
+       WHERE id = ? AND user_id = ?`,
+    )
+      .bind("folder_1", "user_dev")
+      .first<{ deletedAt: string | null; currentRevision: number }>();
+
+    expect(folder).toEqual({
+      deletedAt: null,
+      currentRevision: 1,
+    });
+
+    const note = await baseEnv.DB.prepare(
+      `SELECT
+         title,
+         body_md AS bodyMd,
+         deleted_at AS deletedAt,
+         current_revision AS currentRevision
+       FROM notes
+       WHERE id = ? AND user_id = ?`,
+    )
+      .bind("note_1", "user_dev")
+      .first<{
+        title: string;
+        bodyMd: string;
+        deletedAt: string | null;
+        currentRevision: number;
+      }>();
+
+    expect(note).toEqual({
+      title: "Original",
+      bodyMd: "Original Body",
+      deletedAt: null,
+      currentRevision: 1,
+    });
+
+    const eventCount = await baseEnv.DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM sync_events
+       WHERE user_id = ? AND client_change_id IN (?, ?)`,
+    )
+      .bind(
+        "user_dev",
+        "chg_folder_delete_before_child_update",
+        "chg_child_update_after_folder_delete",
+      )
+      .first<{ count: number }>();
+
+    expect(eventCount?.count).toBe(0);
+  });
+
+  it("uses an existing accepted child note update as handled when retrying folder delete", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    await baseEnv.DB.batch([
+      baseEnv.DB.prepare(
+        `INSERT INTO folders (
+          id, user_id, name, sort_order, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("folder_1", "user_dev", "Inbox", 1, 1, now, now),
+      baseEnv.DB.prepare(
+        `INSERT INTO notes (
+          id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("note_1", "user_dev", "folder_1", "Already Updated", "Current Body", "Current Body", 3, now, now),
+      baseEnv.DB.prepare(
+        `INSERT INTO sync_events (
+          id, user_id, entity_type, entity_id, operation,
+          revision_number, client_change_id, source_device_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        "evt_existing_note_update_retry",
+        "user_dev",
+        "note",
+        "note_1",
+        "update",
+        3,
+        "chg_existing_note_update_before_folder_delete",
+        "web_1",
+        now,
+      ),
+    ]);
+
+    const response = await pushSync(
+      {
+        deviceId: "web_1",
+        changes: [
+          {
+            clientChangeId: "chg_existing_note_update_before_folder_delete",
+            entityType: "note",
+            entityId: "note_1",
+            operation: "update",
+            baseRevision: 2,
+            payload: {
+              folderId: "folder_1",
+              title: "Already Updated",
+              bodyMd: "Current Body",
+            },
+          },
+          {
+            clientChangeId: "chg_folder_delete_after_existing_child_update",
+            entityType: "folder",
+            entityId: "folder_1",
+            operation: "delete",
+            baseRevision: 1,
+            payload: null,
+          },
+        ],
+      },
+      cookie,
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      accepted: Array<{ acceptedRevision: number; cursor: number }>;
+      cursor: number;
+    };
+
+    expect(body.accepted.map((accepted) => accepted.acceptedRevision)).toEqual([3, 2]);
+
+    const events = await baseEnv.DB.prepare(
+      `SELECT
+         entity_type AS entityType,
+         entity_id AS entityId,
+         operation,
+         revision_number AS revisionNumber,
+         client_change_id AS clientChangeId
+       FROM sync_events
+       WHERE user_id = ?
+       ORDER BY cursor ASC`,
+    )
+      .bind("user_dev")
+      .all<{
+        entityType: string;
+        entityId: string;
+        operation: string;
+        revisionNumber: number;
+        clientChangeId: string;
+      }>();
+
+    expect(events.results).toEqual([
+      {
+        entityType: "note",
+        entityId: "note_1",
+        operation: "update",
+        revisionNumber: 3,
+        clientChangeId: "chg_existing_note_update_before_folder_delete",
+      },
+      {
+        entityType: "folder",
+        entityId: "folder_1",
+        operation: "delete",
+        revisionNumber: 2,
+        clientChangeId: "chg_folder_delete_after_existing_child_update",
+      },
+      {
+        entityType: "note",
+        entityId: "note_1",
+        operation: "delete",
+        revisionNumber: 4,
+        clientChangeId: "cascade_folder_1_note_1",
+      },
+    ]);
   });
 
   it("soft-deletes a note via sync push", async () => {
