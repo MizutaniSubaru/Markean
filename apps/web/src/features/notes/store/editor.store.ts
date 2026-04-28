@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type MobileView = "folders" | "notes" | "editor";
+type MobileView = "folders" | "notes" | "editor";
 
 type EditorState = {
   activeFolderId: string;
@@ -21,6 +21,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   searchQuery: "",
   mobileView: "folders",
   newNoteId: null,
+
   selectFolder: (id) => set({ activeFolderId: id, searchQuery: "" }),
   selectNote: (id) => set({ activeNoteId: id }),
   setSearchQuery: (query) => set({ searchQuery: query }),

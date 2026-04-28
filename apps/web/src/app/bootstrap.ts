@@ -1,21 +1,24 @@
 import { createApiClient } from "@markean/api-client";
 import { markdownToPlainText } from "@markean/domain";
-import type { FolderRecord, NoteRecord } from "@markean/domain";
-import { createWebDatabase } from "@markean/storage-web";
-import { detectLocale } from "../i18n";
+import type { FolderRecord, NoteRecord, PendingChange } from "@markean/domain";
+import { queueChange } from "@markean/sync-core";
+import { createWebDatabase, type MarkeanWebDatabase } from "@markean/storage-web";
 import { getWelcomeNote } from "../features/notes/components/shared/WelcomeNote";
 import { getAllFolders } from "../features/notes/persistence/folders.persistence";
 import { getDb, initDb } from "../features/notes/persistence/db";
 import { getAllNotes } from "../features/notes/persistence/notes.persistence";
-import { useFoldersStore } from "../features/notes/store/folders.store";
-import { useEditorStore } from "../features/notes/store/editor.store";
-import { useNotesStore } from "../features/notes/store/notes.store";
 import { createSyncScheduler } from "../features/notes/sync/sync.scheduler";
 import { createSyncService } from "../features/notes/sync/sync.service";
+import { useEditorStore } from "../features/notes/store/editor.store";
+import { useFoldersStore } from "../features/notes/store/folders.store";
+import { useNotesStore } from "../features/notes/store/notes.store";
 
 const WORKSPACE_KEY = "markean:workspace";
 const DRAFT_PREFIX = "markean:draft:";
 const SYNC_STATUS_KEY = "markean:sync-status";
+const LOCALE_KEY = "markean:locale";
+const WELCOME_FOLDER_ID = "notes";
+const WELCOME_NOTE_ID = "welcome-note";
 
 type LegacyWorkspace = {
   folders: Array<{ id: string; name: string }>;
@@ -24,55 +27,314 @@ type LegacyWorkspace = {
     folderId: string;
     title: string;
     body: string;
-    updatedAt: string;
+    updatedAt?: string;
   }>;
   activeFolderId: string;
   activeNoteId: string;
 };
 
-let scheduler: ReturnType<typeof createSyncScheduler> | null = null;
+type MigrationSelection = {
+  activeFolderId: string;
+  activeNoteId: string;
+};
 
-export function getScheduler() {
-  return scheduler;
+type BootstrapConcurrencyHooks = {
+  beforeMigrationWrite?: () => Promise<void> | void;
+  afterMigration?: () => Promise<void> | void;
+  beforeWelcomeWrite?: () => Promise<void> | void;
+  beforeRemoteWrite?: () => Promise<void> | void;
+};
+
+type BootstrapApplyOptions = {
+  shouldApply?: () => boolean;
+};
+
+type BootstrapAppOptions = {
+  onLocalReady?: () => void;
+};
+
+let concurrencyHooks: BootstrapConcurrencyHooks = {};
+
+export function setBootstrapConcurrencyHooksForTests(hooks: BootstrapConcurrencyHooks): void {
+  concurrencyHooks = hooks;
 }
 
-export async function migrateFromLocalStorage(): Promise<void> {
+class StaleBootstrapError extends Error {
+  constructor() {
+    super("Stale bootstrap run");
+  }
+}
+
+function shouldApplyBootstrap(options: BootstrapApplyOptions = {}): boolean {
+  return options.shouldApply?.() ?? true;
+}
+
+function assertShouldApplyBootstrap(options: BootstrapApplyOptions = {}): void {
+  if (!shouldApplyBootstrap(options)) {
+    throw new StaleBootstrapError();
+  }
+}
+
+function isValidBootstrapResponse(
+  value: unknown,
+): value is { folders: FolderRecord[]; notes: NoteRecord[]; syncCursor: number } {
+  if (!value || typeof value !== "object") return false;
+  const bootstrap = value as Record<string, unknown>;
+  if (!Array.isArray(bootstrap.folders)) return false;
+  if (!Array.isArray(bootstrap.notes)) return false;
+  if (typeof bootstrap.syncCursor !== "number") return false;
+  if (!isNonNegativeInteger(bootstrap.syncCursor)) return false;
+  if (!bootstrap.folders.every(isRemoteFolderRecord)) return false;
+  if (!bootstrap.notes.every(isRemoteNoteRecord)) return false;
+  if (!hasUniqueIds(bootstrap.folders)) return false;
+  if (!hasUniqueIds(bootstrap.notes)) return false;
+
+  return true;
+}
+
+function hasValidRemoteNoteParents(
+  notes: NoteRecord[],
+  activeRemoteFolderIds: Set<string>,
+): boolean {
+  return notes.every((note) => activeRemoteFolderIds.has(note.folderId));
+}
+
+function isNonBlank(value: string): boolean {
+  return value.trim().length > 0;
+}
+
+function isNonNegativeInteger(value: number): boolean {
+  return Number.isInteger(value) && value >= 0;
+}
+
+function isValidDateString(value: string): boolean {
+  return Number.isFinite(Date.parse(value));
+}
+
+function parseStoredSyncCursor(value: string | undefined): number {
+  if (!value) return 0;
+  const cursor = Number(value);
+  return isNonNegativeInteger(cursor) ? cursor : 0;
+}
+
+function hasUniqueIds(records: Array<{ id: string }>): boolean {
+  return new Set(records.map((record) => record.id)).size === records.length;
+}
+
+function isRemoteFolderRecord(value: unknown): value is FolderRecord {
+  if (!value || typeof value !== "object") return false;
+  const folder = value as Record<string, unknown>;
+  return (
+    typeof folder.id === "string" &&
+    isNonBlank(folder.id) &&
+    typeof folder.name === "string" &&
+    typeof folder.sortOrder === "number" &&
+    Number.isFinite(folder.sortOrder) &&
+    typeof folder.currentRevision === "number" &&
+    isNonNegativeInteger(folder.currentRevision) &&
+    typeof folder.updatedAt === "string" &&
+    isValidDateString(folder.updatedAt) &&
+    folder.deletedAt === null
+  );
+}
+
+function isRemoteNoteRecord(value: unknown): value is NoteRecord {
+  if (!value || typeof value !== "object") return false;
+  const note = value as Record<string, unknown>;
+  return (
+    typeof note.id === "string" &&
+    isNonBlank(note.id) &&
+    typeof note.folderId === "string" &&
+    isNonBlank(note.folderId) &&
+    typeof note.title === "string" &&
+    typeof note.bodyMd === "string" &&
+    typeof note.bodyPlain === "string" &&
+    typeof note.currentRevision === "number" &&
+    isNonNegativeInteger(note.currentRevision) &&
+    typeof note.updatedAt === "string" &&
+    isValidDateString(note.updatedAt) &&
+    note.deletedAt === null
+  );
+}
+
+function isLegacyFolder(value: unknown): value is LegacyWorkspace["folders"][number] {
+  if (!value || typeof value !== "object") return false;
+  const folder = value as Record<string, unknown>;
+  return (
+    typeof folder.id === "string" &&
+    isNonBlank(folder.id) &&
+    typeof folder.name === "string"
+  );
+}
+
+function isLegacyNote(value: unknown): value is LegacyWorkspace["notes"][number] {
+  if (!value || typeof value !== "object") return false;
+  const note = value as Record<string, unknown>;
+  return (
+    typeof note.id === "string" &&
+    isNonBlank(note.id) &&
+    typeof note.folderId === "string" &&
+    isNonBlank(note.folderId) &&
+    typeof note.title === "string" &&
+    typeof note.body === "string" &&
+    (
+      !("updatedAt" in note) ||
+      (typeof note.updatedAt === "string" && isValidDateString(note.updatedAt))
+    )
+  );
+}
+
+function hasValidLegacyReferences(workspace: LegacyWorkspace): boolean {
+  const folderIds = new Set(workspace.folders.map((folder) => folder.id));
+  if (folderIds.size !== workspace.folders.length) return false;
+
+  const notesById = new Map(workspace.notes.map((note) => [note.id, note]));
+  if (notesById.size !== workspace.notes.length) return false;
+
+  if (workspace.activeFolderId !== "" && !folderIds.has(workspace.activeFolderId)) {
+    return false;
+  }
+
+  if (workspace.activeFolderId === "" && workspace.activeNoteId !== "") {
+    return false;
+  }
+
+  if (workspace.activeNoteId !== "" && !notesById.has(workspace.activeNoteId)) {
+    return false;
+  }
+
+  if (workspace.notes.some((note) => !folderIds.has(note.folderId))) {
+    return false;
+  }
+
+  if (workspace.activeFolderId !== "" && workspace.activeNoteId !== "") {
+    return notesById.get(workspace.activeNoteId)?.folderId === workspace.activeFolderId;
+  }
+
+  return true;
+}
+
+function getLocalStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readLocalStorage(key: string): string | null {
+  const storage = getLocalStorage();
+  if (!storage) return null;
+
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function removeLocalStorage(key: string): void {
+  const storage = getLocalStorage();
+  if (!storage) return;
+
+  try {
+    storage.removeItem(key);
+  } catch {
+    // Storage may be unavailable in private or non-browser contexts.
+  }
+}
+
+function removeLegacyDrafts(): void {
+  const storage = getLocalStorage();
+  if (!storage) return;
+
+  try {
+    const draftKeys: string[] = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key?.startsWith(DRAFT_PREFIX)) {
+        draftKeys.push(key);
+      }
+    }
+
+    for (const key of draftKeys) {
+      storage.removeItem(key);
+    }
+  } catch {
+    // Storage enumeration/removal can fail in restricted browser contexts.
+  }
+}
+
+async function queueCreateChangeOnce(
+  db: MarkeanWebDatabase,
+  entityType: "folder" | "note",
+  entityId: string,
+): Promise<void> {
+  const existing = await db.pendingChanges.where("entityId").equals(entityId).toArray();
+  if (
+    existing.some(
+      (change) => change.entityType === entityType && change.operation === "create",
+    )
+  ) {
+    return;
+  }
+
+  await queueChange(db, {
+    entityType,
+    entityId,
+    operation: "create",
+    baseRevision: 0,
+  });
+}
+
+function waitForTransactionPromise<T>(
+  db: MarkeanWebDatabase,
+  value: PromiseLike<T> | T,
+): Promise<T> {
+  const dexieConstructor = db.constructor as unknown as {
+    waitFor<TValue>(promise: PromiseLike<TValue> | TValue): Promise<TValue>;
+  };
+  return dexieConstructor.waitFor(value);
+}
+
+async function migrateFromLocalStorageInternal(
+  options: BootstrapApplyOptions = {},
+): Promise<MigrationSelection | null> {
   const db = getDb();
-  const noteCount = await db.notes.count();
-  const folderCount = await db.folders.count();
+  const existingCount = (await db.notes.count()) + (await db.folders.count());
+  if (existingCount > 0) return null;
 
-  if (noteCount + folderCount > 0) {
-    return;
-  }
-
-  const raw = localStorage.getItem(WORKSPACE_KEY);
-  if (!raw) {
-    return;
-  }
+  const raw = readLocalStorage(WORKSPACE_KEY);
+  if (!raw) return null;
 
   let workspace: LegacyWorkspace;
   try {
-    workspace = JSON.parse(raw);
+    workspace = JSON.parse(raw) as LegacyWorkspace;
   } catch {
-    return;
+    return null;
   }
 
-  if (!Array.isArray(workspace.folders) || !Array.isArray(workspace.notes)) {
-    return;
-  }
+  if (!workspace || typeof workspace !== "object") return null;
+  if (!Array.isArray(workspace.folders) || !Array.isArray(workspace.notes)) return null;
+  if (typeof workspace.activeFolderId !== "string") return null;
+  if (typeof workspace.activeNoteId !== "string") return null;
+  if (!workspace.folders.every(isLegacyFolder)) return null;
+  if (!workspace.notes.every(isLegacyNote)) return null;
+  if (!hasValidLegacyReferences(workspace)) return null;
 
+  const now = new Date().toISOString();
   const folders: FolderRecord[] = workspace.folders.map((folder, index) => ({
     id: folder.id,
     name: folder.name,
     sortOrder: index,
     currentRevision: 0,
-    updatedAt: new Date().toISOString(),
+    updatedAt: now,
     deletedAt: null,
   }));
 
   const notes: NoteRecord[] = workspace.notes.map((note) => {
-    const draft = localStorage.getItem(`${DRAFT_PREFIX}${note.id}`);
-    const bodyMd = draft ?? note.body;
+    const bodyMd = readLocalStorage(`${DRAFT_PREFIX}${note.id}`) ?? note.body;
 
     return {
       id: note.id,
@@ -81,117 +343,561 @@ export async function migrateFromLocalStorage(): Promise<void> {
       bodyMd,
       bodyPlain: markdownToPlainText(bodyMd),
       currentRevision: 0,
-      updatedAt: note.updatedAt || new Date().toISOString(),
+      updatedAt: note.updatedAt || now,
       deletedAt: null,
     };
   });
 
-  await db.transaction("rw", db.folders, db.notes, async () => {
+  let didMigrate = false;
+  await db.transaction("rw", db.folders, db.notes, db.pendingChanges, async () => {
+    await waitForTransactionPromise(db, concurrencyHooks.beforeMigrationWrite?.());
+    assertShouldApplyBootstrap(options);
+    const existingCountInTransaction =
+      (await db.notes.count()) + (await db.folders.count());
+    if (existingCountInTransaction > 0) return;
+
+    assertShouldApplyBootstrap(options);
     await db.folders.bulkPut(folders);
+    assertShouldApplyBootstrap(options);
     await db.notes.bulkPut(notes);
+    assertShouldApplyBootstrap(options);
+    for (const folder of folders) {
+      await queueCreateChangeOnce(db, "folder", folder.id);
+      assertShouldApplyBootstrap(options);
+    }
+    for (const note of notes) {
+      await queueCreateChangeOnce(db, "note", note.id);
+      assertShouldApplyBootstrap(options);
+    }
+    assertShouldApplyBootstrap(options);
+    didMigrate = true;
   });
 
-  localStorage.removeItem(WORKSPACE_KEY);
-  for (const note of workspace.notes) {
-    localStorage.removeItem(`${DRAFT_PREFIX}${note.id}`);
-  }
-  localStorage.removeItem(SYNC_STATUS_KEY);
+  if (!didMigrate) return null;
+  assertShouldApplyBootstrap(options);
+
+  removeLocalStorage(WORKSPACE_KEY);
+  removeLegacyDrafts();
+  removeLocalStorage(SYNC_STATUS_KEY);
+
+  return {
+    activeFolderId: workspace.activeFolderId,
+    activeNoteId: workspace.activeNoteId,
+  };
 }
 
-async function ensureWelcomeNote(): Promise<void> {
-  const db = getDb();
-  const noteCount = await db.notes.count();
-  const folderCount = await db.folders.count();
+export async function migrateFromLocalStorage(): Promise<void> {
+  await migrateFromLocalStorageInternal();
+}
 
-  if (noteCount > 0 || folderCount > 0) {
-    return;
-  }
+function detectLocale(): string {
+  const stored = readLocalStorage(LOCALE_KEY);
+  if (stored) return stored.startsWith("zh") ? "zh" : "en";
+
+  if (typeof navigator === "undefined") return "en";
+  return navigator.language.startsWith("zh") ? "zh" : "en";
+}
+
+async function ensureWelcomeNote(options: BootstrapApplyOptions = {}): Promise<void> {
+  const db = getDb();
+  const existingCount = (await db.notes.count()) + (await db.folders.count());
+  if (existingCount > 0) return;
 
   const locale = detectLocale();
   const welcome = getWelcomeNote(locale);
-  const folderId = "notes";
-  const folderName = locale.startsWith("zh") ? "笔记" : "Notes";
   const now = new Date().toISOString();
 
-  await db.folders.put({
-    id: folderId,
-    name: folderName,
-    sortOrder: 0,
-    currentRevision: 0,
-    updatedAt: now,
-    deletedAt: null,
-  });
+  await db.transaction("rw", db.folders, db.notes, db.pendingChanges, async () => {
+    await waitForTransactionPromise(db, concurrencyHooks.beforeWelcomeWrite?.());
+    assertShouldApplyBootstrap(options);
+    const existingCountInTransaction =
+      (await db.notes.count()) + (await db.folders.count());
+    if (existingCountInTransaction > 0) return;
 
-  await db.notes.put({
-    id: "welcome-note",
-    folderId,
-    title: welcome.title,
-    bodyMd: welcome.body,
-    bodyPlain: markdownToPlainText(welcome.body),
-    currentRevision: 0,
-    updatedAt: now,
-    deletedAt: null,
+    assertShouldApplyBootstrap(options);
+    await db.folders.put({
+      id: WELCOME_FOLDER_ID,
+      name: locale.startsWith("zh") ? "笔记" : "Notes",
+      sortOrder: 0,
+      currentRevision: 0,
+      updatedAt: now,
+      deletedAt: null,
+    });
+    assertShouldApplyBootstrap(options);
+    await queueCreateChangeOnce(db, "folder", WELCOME_FOLDER_ID);
+    assertShouldApplyBootstrap(options);
+
+    await db.notes.put({
+      id: WELCOME_NOTE_ID,
+      folderId: WELCOME_FOLDER_ID,
+      title: welcome.title,
+      bodyMd: welcome.body,
+      bodyPlain: markdownToPlainText(welcome.body),
+      currentRevision: 0,
+      updatedAt: now,
+      deletedAt: null,
+    });
+    assertShouldApplyBootstrap(options);
+    await queueCreateChangeOnce(db, "note", WELCOME_NOTE_ID);
+    assertShouldApplyBootstrap(options);
   });
 }
 
-export async function bootstrapApp(baseUrl = ""): Promise<void> {
-  const db = createWebDatabase("markean");
-  initDb(db);
+function isUntouchedBootstrapWelcomeFolder(folder: FolderRecord | undefined): boolean {
+  return (
+    folder?.id === WELCOME_FOLDER_ID &&
+    (folder.name === "Notes" || folder.name === "笔记") &&
+    folder.sortOrder === 0 &&
+    folder.currentRevision === 0 &&
+    folder.deletedAt === null
+  );
+}
 
-  await migrateFromLocalStorage();
-  await ensureWelcomeNote();
-
-  const [localNotes, localFolders] = await Promise.all([getAllNotes(), getAllFolders()]);
-  useNotesStore.getState().loadNotes(localNotes);
-  useFoldersStore.getState().loadFolders(localFolders);
-
-  const activeFolders = localFolders.filter((folder) => !folder.deletedAt);
-  const activeNotes = localNotes.filter((note) => !note.deletedAt);
-  if (activeFolders.length > 0) {
-    useEditorStore.getState().selectFolder(activeFolders[0].id);
-    const firstNote = activeNotes.find((note) => note.folderId === activeFolders[0].id);
-    if (firstNote) {
-      useEditorStore.getState().selectNote(firstNote.id);
-    }
+function isUntouchedBootstrapWelcomeNote(note: NoteRecord | undefined): boolean {
+  if (
+    note?.id !== WELCOME_NOTE_ID ||
+    note.folderId !== WELCOME_FOLDER_ID ||
+    note.currentRevision !== 0 ||
+    note.deletedAt !== null
+  ) {
+    return false;
   }
 
-  const apiClient = createApiClient(baseUrl);
-  const syncService = createSyncService(apiClient);
+  return [getWelcomeNote("en"), getWelcomeNote("zh")].some(
+    (welcome) =>
+      note.title === welcome.title &&
+      note.bodyMd === welcome.body &&
+      note.bodyPlain === markdownToPlainText(welcome.body),
+  );
+}
+
+function getOnlyBootstrapCreateChange(
+  changes: PendingChange[],
+  entityType: PendingChange["entityType"],
+  entityId: string,
+): PendingChange | null {
+  const matchingChanges = changes.filter((change) => change.entityType === entityType);
+  if (matchingChanges.length !== 1) return null;
+
+  const [change] = matchingChanges;
+  if (
+    change.entityId === entityId &&
+    change.operation === "create" &&
+    change.baseRevision === 0
+  ) {
+    return change;
+  }
+
+  return null;
+}
+
+async function removeUntouchedBootstrapWelcomeRecords(
+  db: MarkeanWebDatabase,
+  remoteWelcomeFolder: FolderRecord | undefined,
+  options: BootstrapApplyOptions = {},
+): Promise<void> {
+  const folder = await db.folders.get(WELCOME_FOLDER_ID);
+  assertShouldApplyBootstrap(options);
+  const note = await db.notes.get(WELCOME_NOTE_ID);
+  assertShouldApplyBootstrap(options);
+  const folderPendingChanges = await db.pendingChanges
+    .where("entityId")
+    .equals(WELCOME_FOLDER_ID)
+    .toArray();
+  assertShouldApplyBootstrap(options);
+  const notePendingChanges = await db.pendingChanges
+    .where("entityId")
+    .equals(WELCOME_NOTE_ID)
+    .toArray();
+  assertShouldApplyBootstrap(options);
+  const otherActiveNotesInWelcomeFolder = await db.notes
+    .where("folderId")
+    .equals(WELCOME_FOLDER_ID)
+    .filter((localNote) => localNote.id !== WELCOME_NOTE_ID && localNote.deletedAt === null)
+    .count();
+  assertShouldApplyBootstrap(options);
+
+  const folderCreateChange = getOnlyBootstrapCreateChange(
+    folderPendingChanges,
+    "folder",
+    WELCOME_FOLDER_ID,
+  );
+  const noteCreateChange = getOnlyBootstrapCreateChange(
+    notePendingChanges,
+    "note",
+    WELCOME_NOTE_ID,
+  );
+  const canCleanBootstrapFolder =
+    isUntouchedBootstrapWelcomeFolder(folder) && folderCreateChange !== null;
+  if (!canCleanBootstrapFolder) {
+    return;
+  }
+
+  const canRemoveWelcomeNote =
+    isUntouchedBootstrapWelcomeNote(note) && noteCreateChange !== null;
+  const shouldPreserveLocalFolder = otherActiveNotesInWelcomeFolder > 0;
+  const shouldDropFolderCreate =
+    remoteWelcomeFolder !== undefined ||
+    (canRemoveWelcomeNote && !shouldPreserveLocalFolder);
+  if (!canRemoveWelcomeNote && !shouldDropFolderCreate) {
+    return;
+  }
+
+  const changeIdsToDelete: string[] = [];
+  if (canRemoveWelcomeNote && noteCreateChange) {
+    changeIdsToDelete.push(noteCreateChange.clientChangeId);
+  }
+  if (shouldDropFolderCreate) {
+    changeIdsToDelete.push(folderCreateChange.clientChangeId);
+  }
+
+  await db.pendingChanges
+    .where("clientChangeId")
+    .anyOf(changeIdsToDelete)
+    .delete();
+  assertShouldApplyBootstrap(options);
+
+  if (canRemoveWelcomeNote) {
+    await db.notes.delete(WELCOME_NOTE_ID);
+    assertShouldApplyBootstrap(options);
+  }
+
+  if (remoteWelcomeFolder) {
+    await db.folders.put(remoteWelcomeFolder);
+    assertShouldApplyBootstrap(options);
+    return;
+  }
+
+  if (shouldPreserveLocalFolder) return;
+
+  await db.folders.delete(WELCOME_FOLDER_ID);
+  assertShouldApplyBootstrap(options);
+}
+
+let scheduler: ReturnType<typeof createSyncScheduler> | null = null;
+let bootstrapGeneration = 0;
+let pendingMigratedSelection: MigrationSelection | null = null;
+
+export function getScheduler(): ReturnType<typeof createSyncScheduler> | null {
+  return scheduler;
+}
+
+export function resetSchedulerForTests(): void {
+  bootstrapGeneration += 1;
   scheduler?.stop();
-  scheduler = createSyncScheduler(syncService.executeSyncCycle);
+  scheduler = null;
+  concurrencyHooks = {};
+  pendingMigratedSelection = null;
+}
+
+function restoreEditorSelection(
+  localNotes: NoteRecord[],
+  localFolders: FolderRecord[],
+  migratedSelection: MigrationSelection | null,
+): void {
+  const activeFolders = localFolders.filter((folder) => !folder.deletedAt);
+  const activeNotes = localNotes.filter((note) => !note.deletedAt);
+
+  if (migratedSelection !== null) {
+    useEditorStore.getState().selectFolder(migratedSelection.activeFolderId);
+    useEditorStore.getState().selectNote(migratedSelection.activeNoteId);
+    return;
+  }
+
+  const firstFolder = activeFolders[0];
+  if (firstFolder) {
+    useEditorStore.getState().selectFolder(firstFolder.id);
+    const firstNote = activeNotes.find((note) => note.folderId === firstFolder.id);
+    if (firstNote) {
+      useEditorStore.getState().selectNote(firstNote.id);
+    } else {
+      useEditorStore.getState().selectNote("");
+    }
+    return;
+  }
+
+  useEditorStore.getState().selectFolder("");
+  useEditorStore.getState().selectNote("");
+}
+
+function revalidateEditorSelection(
+  localNotes: NoteRecord[],
+  localFolders: FolderRecord[],
+): void {
+  const activeFolders = localFolders.filter((folder) => !folder.deletedAt);
+  const activeNotes = localNotes.filter((note) => !note.deletedAt);
+  const { activeFolderId, activeNoteId } = useEditorStore.getState();
+  if (activeFolderId === "" && activeNoteId === "") return;
+
+  const selectedFolder = activeFolders.find((folder) => folder.id === activeFolderId);
+
+  if (!selectedFolder) {
+    restoreEditorSelection(localNotes, localFolders, null);
+    return;
+  }
+
+  const selectedNote = activeNotes.find(
+    (note) => note.id === activeNoteId && note.folderId === selectedFolder.id,
+  );
+  if (selectedNote) return;
+
+  const firstNoteInSelectedFolder = activeNotes.find(
+    (note) => note.folderId === selectedFolder.id,
+  );
+  useEditorStore.getState().selectFolder(selectedFolder.id);
+  useEditorStore.getState().selectNote(firstNoteInSelectedFolder?.id ?? "");
+}
+
+export async function bootstrapApp(
+  baseUrl = "",
+  options: BootstrapAppOptions = {},
+): Promise<void> {
+  const generation = bootstrapGeneration + 1;
+  bootstrapGeneration = generation;
+  scheduler?.stop();
+  scheduler = null;
+
+  const db = createWebDatabase("markean");
+  const apiClient = createApiClient(baseUrl);
+  initDb(db);
+  const isStale = () => generation !== bootstrapGeneration;
+
+  let migratedSelection: MigrationSelection | null = null;
+  try {
+    migratedSelection = await migrateFromLocalStorageInternal({
+      shouldApply: () => !isStale(),
+    });
+    if (migratedSelection !== null) {
+      pendingMigratedSelection = migratedSelection;
+    }
+    await concurrencyHooks.afterMigration?.();
+    if (isStale()) {
+      db.close();
+      return;
+    }
+    await ensureWelcomeNote({
+      shouldApply: () => !isStale(),
+    });
+    if (isStale()) {
+      db.close();
+      return;
+    }
+  } catch (error) {
+    if (error instanceof StaleBootstrapError) {
+      db.close();
+      return;
+    }
+    throw error;
+  }
+
+  const [localNotes, localFolders] = await Promise.all([getAllNotes(), getAllFolders()]);
+  if (isStale()) {
+    db.close();
+    return;
+  }
+  useNotesStore.getState().loadNotes(localNotes);
+  useFoldersStore.getState().loadFolders(localFolders);
+  const selectionToRestore = pendingMigratedSelection ?? migratedSelection;
+  const consumedMigratedSelection = selectionToRestore !== null;
+  restoreEditorSelection(localNotes, localFolders, selectionToRestore);
+
+  const syncService = createSyncService(apiClient, {
+    shouldApply: () => !isStale(),
+  });
+  const localScheduler = createSyncScheduler(syncService.executeSyncCycle);
+  scheduler = localScheduler;
+  options.onLocalReady?.();
 
   try {
+    const bootstrapRequestStartCursor = parseStoredSyncCursor(
+      (await db.syncState.get("syncCursor"))?.value,
+    );
     const bootstrap = await apiClient.bootstrap();
-    const serverNotes = (bootstrap.notes ?? []) as NoteRecord[];
-    const serverFolders = (bootstrap.folders ?? []) as FolderRecord[];
+    if (isStale()) {
+      localScheduler.stop();
+      db.close();
+      return;
+    }
+    if (!isValidBootstrapResponse(bootstrap)) {
+      throw new Error("Invalid bootstrap response");
+    }
+    const serverNotes = bootstrap.notes;
+    const serverFolders = bootstrap.folders;
+    const serverNoteIds = new Set(serverNotes.map((note) => note.id));
+    const serverFolderIds = new Set(serverFolders.map((folder) => folder.id));
+    const serverReferencedFolderIds = new Set(
+      serverNotes.map((note) => note.folderId),
+    );
 
-    await db.transaction("rw", db.notes, db.folders, db.syncState, async () => {
+    await db.transaction("rw", db.notes, db.folders, db.pendingChanges, db.syncState, async () => {
+      await concurrencyHooks.beforeRemoteWrite?.();
+      if (isStale()) throw new StaleBootstrapError();
+      let skippedPendingBootstrapConflict = false;
+      const currentSyncCursorRecord = await db.syncState.get("syncCursor");
+      const currentSyncCursor = parseStoredSyncCursor(currentSyncCursorRecord?.value);
+      if (
+        currentSyncCursor > bootstrap.syncCursor ||
+        (
+          currentSyncCursor !== bootstrapRequestStartCursor &&
+          currentSyncCursor >= bootstrap.syncCursor
+        )
+      ) {
+        return;
+      }
+      if (
+        !hasValidRemoteNoteParents(
+          serverNotes,
+          serverFolderIds,
+        )
+      ) {
+        throw new Error("Invalid bootstrap response");
+      }
+      const remoteSnapshotComesFromExistingAccount =
+        serverNotes.length > 0 || serverFolders.length > 0 || bootstrap.syncCursor > 0;
+      if (remoteSnapshotComesFromExistingAccount) {
+        const remoteWelcomeFolder = serverFolders.find(
+          (folder) => folder.id === WELCOME_FOLDER_ID,
+        );
+        await removeUntouchedBootstrapWelcomeRecords(db, remoteWelcomeFolder, {
+          shouldApply: () => !isStale(),
+        });
+        if (isStale()) throw new StaleBootstrapError();
+      }
+
       for (const note of serverNotes) {
+        const pendingChanges = await db.pendingChanges.where("entityId").equals(note.id).toArray();
+        if (pendingChanges.some((change) => change.entityType === "note")) {
+          skippedPendingBootstrapConflict = true;
+          continue;
+        }
+
         const local = await db.notes.get(note.id);
-        if (!local || note.currentRevision > local.currentRevision) {
+        if (!local || (note.currentRevision ?? 0) > (local.currentRevision ?? 0)) {
+          if (isStale()) throw new StaleBootstrapError();
           await db.notes.put(note);
+          if (isStale()) throw new StaleBootstrapError();
         }
       }
 
       for (const folder of serverFolders) {
+        const pendingChanges = await db.pendingChanges
+          .where("entityId")
+          .equals(folder.id)
+          .toArray();
+        if (pendingChanges.some((change) => change.entityType === "folder")) {
+          skippedPendingBootstrapConflict = true;
+          continue;
+        }
+
         const local = await db.folders.get(folder.id);
-        if (!local || folder.currentRevision > local.currentRevision) {
+        if (!local || (folder.currentRevision ?? 0) > (local.currentRevision ?? 0)) {
+          if (isStale()) throw new StaleBootstrapError();
           await db.folders.put(folder);
+          if (isStale()) throw new StaleBootstrapError();
         }
       }
 
-      await db.syncState.put({
-        key: "syncCursor",
-        value: String(bootstrap.syncCursor ?? 0),
-      });
+      const deletedAt = new Date().toISOString();
+      const folderIdsReferencedByPreservedPendingNotes = new Set<string>();
+      const localNotesInTransaction = await db.notes.toArray();
+      for (const note of localNotesInTransaction) {
+        if (serverNoteIds.has(note.id)) continue;
+
+        const pendingChanges = await db.pendingChanges.where("entityId").equals(note.id).toArray();
+        const notePendingChanges = pendingChanges.filter(
+          (change) => change.entityType === "note",
+        );
+        if (note.deletedAt) {
+          if (notePendingChanges.some((change) => change.operation === "delete")) {
+            skippedPendingBootstrapConflict = true;
+          }
+          continue;
+        }
+        if (notePendingChanges.length > 0) {
+          folderIdsReferencedByPreservedPendingNotes.add(note.folderId);
+          if (notePendingChanges.some((change) => change.operation !== "create")) {
+            skippedPendingBootstrapConflict = true;
+          }
+          continue;
+        }
+
+        if (isStale()) throw new StaleBootstrapError();
+        await db.notes.put({ ...note, deletedAt });
+        if (isStale()) throw new StaleBootstrapError();
+      }
+
+      const localFoldersInTransaction = await db.folders.toArray();
+      for (const folder of localFoldersInTransaction) {
+        if (serverFolderIds.has(folder.id)) continue;
+        if (serverReferencedFolderIds.has(folder.id)) continue;
+        if (folderIdsReferencedByPreservedPendingNotes.has(folder.id)) continue;
+
+        const pendingChanges = await db.pendingChanges
+          .where("entityId")
+          .equals(folder.id)
+          .toArray();
+        if (folder.deletedAt) {
+          if (
+            pendingChanges.some(
+              (change) => change.entityType === "folder" && change.operation === "delete",
+            )
+          ) {
+            skippedPendingBootstrapConflict = true;
+          }
+          continue;
+        }
+        if (
+          pendingChanges.some(
+            (change) => change.entityType === "folder" && change.operation !== "create",
+          )
+        ) {
+          skippedPendingBootstrapConflict = true;
+          continue;
+        }
+        if (pendingChanges.some((change) => change.entityType === "folder")) continue;
+
+        if (isStale()) throw new StaleBootstrapError();
+        await db.folders.put({ ...folder, deletedAt });
+        if (isStale()) throw new StaleBootstrapError();
+      }
+
+      if (isStale()) throw new StaleBootstrapError();
+      if (!skippedPendingBootstrapConflict) {
+        await db.syncState.put({
+          key: "syncCursor",
+          value: String(Math.max(currentSyncCursor, bootstrap.syncCursor)),
+        });
+      }
+      if (isStale()) throw new StaleBootstrapError();
     });
 
     const [freshNotes, freshFolders] = await Promise.all([getAllNotes(), getAllFolders()]);
+    if (isStale()) {
+      localScheduler.stop();
+      db.close();
+      return;
+    }
     useNotesStore.getState().loadNotes(freshNotes);
     useFoldersStore.getState().loadFolders(freshFolders);
-  } catch {
-    // Fall back to local data when bootstrap fails.
+    revalidateEditorSelection(freshNotes, freshFolders);
+  } catch (error) {
+    if (error instanceof StaleBootstrapError) {
+      localScheduler.stop();
+      db.close();
+      return;
+    }
+    // Local data is already loaded; remote bootstrap can recover on the scheduler.
   }
 
+  if (isStale()) {
+    localScheduler.stop();
+    db.close();
+    return;
+  }
+
+  scheduler = localScheduler;
   scheduler.start();
+  if (consumedMigratedSelection) {
+    pendingMigratedSelection = null;
+  }
 }

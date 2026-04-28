@@ -8,33 +8,43 @@ export function createSyncScheduler(executeSyncCycle: () => Promise<void>) {
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let isSyncing = false;
   let pendingRetry = false;
-  let removeOnlineListeners: (() => void) | null = null;
+  let isStarted = false;
+  let generation = 0;
+  let pendingRetryGeneration: number | null = null;
+
+  const handleOnline = () => {
+    useSyncStore.getState().setOnline(true);
+    void run();
+  };
+
+  const handleOffline = () => {
+    useSyncStore.getState().setOnline(false);
+  };
 
   async function run(): Promise<void> {
     if (isSyncing) {
       pendingRetry = true;
+      pendingRetryGeneration = generation;
       return;
     }
 
     isSyncing = true;
-
     try {
       await executeSyncCycle();
+    } catch {
+      // The sync service owns error state; the scheduler only keeps future runs unblocked.
     } finally {
       isSyncing = false;
-
-      if (pendingRetry) {
+      if (pendingRetry && pendingRetryGeneration === generation) {
         pendingRetry = false;
+        pendingRetryGeneration = null;
         void run();
       }
     }
   }
 
   function requestSync(): void {
-    if (debounceTimer !== null) {
-      clearTimeout(debounceTimer);
-    }
-
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       debounceTimer = null;
       void run();
@@ -42,38 +52,26 @@ export function createSyncScheduler(executeSyncCycle: () => Promise<void>) {
   }
 
   function start(): void {
-    if (pollTimer === null) {
-      pollTimer = setInterval(() => {
-        const { status } = useSyncStore.getState();
-        if (status === "syncing") {
-          return;
-        }
+    if (isStarted) return;
+    isStarted = true;
 
-        void run();
-      }, POLL_INTERVAL_MS);
-    }
+    pollTimer = setInterval(() => {
+      const { status } = useSyncStore.getState();
+      if (status === "syncing") return;
+      void run();
+    }, POLL_INTERVAL_MS);
 
-    if (typeof window !== "undefined" && removeOnlineListeners === null) {
-      const handleOnline = () => {
-        useSyncStore.getState().setOnline(true);
-        void run();
-      };
-
-      const handleOffline = () => {
-        useSyncStore.getState().setOnline(false);
-      };
-
+    if (typeof window !== "undefined") {
       window.addEventListener("online", handleOnline);
       window.addEventListener("offline", handleOffline);
-
-      removeOnlineListeners = () => {
-        window.removeEventListener("online", handleOnline);
-        window.removeEventListener("offline", handleOffline);
-      };
     }
   }
 
   function stop(): void {
+    generation += 1;
+    pendingRetry = false;
+    pendingRetryGeneration = null;
+
     if (debounceTimer !== null) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
@@ -84,10 +82,11 @@ export function createSyncScheduler(executeSyncCycle: () => Promise<void>) {
       pollTimer = null;
     }
 
-    if (removeOnlineListeners) {
-      removeOnlineListeners();
-      removeOnlineListeners = null;
+    if (isStarted && typeof window !== "undefined") {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
     }
+    isStarted = false;
   }
 
   return { requestSync, start, stop };

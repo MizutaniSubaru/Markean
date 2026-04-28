@@ -14,7 +14,9 @@ function createId() {
 
 export const useFoldersStore = create<FoldersState>((set, get) => ({
   folders: [],
-  loadFolders: (folders) => set({ folders }),
+
+  loadFolders: (folders) => set({ folders: [...folders] }),
+
   addFolder: (name) => {
     const folder: FolderRecord = {
       id: createId(),
@@ -24,14 +26,14 @@ export const useFoldersStore = create<FoldersState>((set, get) => ({
       updatedAt: new Date().toISOString(),
       deletedAt: null,
     };
-
     set((state) => ({ folders: [...state.folders, folder] }));
     return folder;
   },
+
   deleteFolder: (id) =>
     set((state) => ({
-      folders: state.folders.map((folder) =>
-        folder.id === id ? { ...folder, deletedAt: new Date().toISOString() } : folder,
+      folders: state.folders.map((f) =>
+        f.id === id ? { ...f, deletedAt: new Date().toISOString() } : f,
       ),
     })),
 }));

@@ -15,68 +15,39 @@ export const syncRoutes = new Hono<AuthEnv>()
   .post("/api/sync/push", async (c) => {
     const body = (await c.req.json()) as PushBody;
     const userId = c.get("userId");
-    const db = getDb(c.env);
-    const conflicts: Array<{
-      entityType: SyncChangeInput["entityType"];
-      entityId: string;
-      serverRevision: number;
-    }> = [];
-
-    for (const change of body.changes) {
-      if (change.operation !== "update") continue;
-
-      const table = change.entityType === "note" ? "notes" : "folders";
-      const currentNote = await db
-        .prepare(
-          `SELECT current_revision AS currentRevision
-           FROM ${table}
-           WHERE id = ? AND user_id = ?`,
-        )
-        .bind(change.entityId, userId)
-        .first<{ currentRevision: number }>();
-
-      const serverRevision = currentNote?.currentRevision ?? 0;
-      if (serverRevision > change.baseRevision) {
-        conflicts.push({
-          entityType: change.entityType,
-          entityId: change.entityId,
-          serverRevision,
-        });
-      }
-    }
-
-    if (conflicts.length > 0) {
-      return c.json(
-        {
-          accepted: [],
-          conflicts,
-        },
-        409,
-      );
-    }
-
     const coordinator = c.env.SYNC_COORDINATOR.getByName(userId);
-    const accepted = [];
 
     try {
-      for (const change of body.changes) {
-        accepted.push(
-          await coordinator.applyChange({
-            ...change,
-            userId,
-            deviceId: body.deviceId,
-          }),
+      const result = await coordinator.applyChanges(
+        body.changes.map((change) => ({
+          ...change,
+          userId,
+          deviceId: body.deviceId,
+        })),
+      );
+
+      if (!result.ok) {
+        if ("error" in result) {
+          return c.json({ error: result.error }, 500);
+        }
+
+        return c.json(
+          {
+            accepted: [],
+            conflicts: result.conflicts,
+          },
+          409,
         );
       }
+
+      return c.json({
+        accepted: result.accepted,
+        cursor: result.cursor,
+      });
     } catch (error) {
       console.error(error);
       return c.json({ error: "sync_push_failed" }, 500);
     }
-
-    return c.json({
-      accepted,
-      cursor: accepted.at(-1)?.cursor ?? 0,
-    });
   })
   .get("/api/sync/pull", async (c) => {
     const cursor = Number(c.req.query("cursor") ?? "0") || 0;

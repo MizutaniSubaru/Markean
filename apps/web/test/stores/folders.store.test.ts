@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FolderRecord } from "@markean/domain";
 import { useFoldersStore } from "../../src/features/notes/store/folders.store";
 
@@ -11,8 +11,18 @@ const folder1: FolderRecord = {
   deletedAt: null,
 };
 
+const folder2: FolderRecord = {
+  id: "folder_2",
+  name: "Archive",
+  sortOrder: 1,
+  currentRevision: 2,
+  updatedAt: "2026-04-22T10:00:00.000Z",
+  deletedAt: null,
+};
+
 describe("folders.store", () => {
   afterEach(() => {
+    vi.useRealTimers();
     useFoldersStore.setState({ folders: [] });
   });
 
@@ -25,26 +35,44 @@ describe("folders.store", () => {
     expect(useFoldersStore.getState().folders).toEqual([folder1]);
   });
 
+  it("isolates loaded folders from source array mutation", () => {
+    const sourceFolders = [folder1];
+
+    useFoldersStore.getState().loadFolders(sourceFolders);
+    sourceFolders.push(folder2);
+
+    expect(useFoldersStore.getState().folders).toEqual([folder1]);
+  });
+
   it("adds a folder optimistically", () => {
-    useFoldersStore.getState().addFolder("Work");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+
+    const folder = useFoldersStore.getState().addFolder("Work");
     const folders = useFoldersStore.getState().folders;
+
     expect(folders).toHaveLength(1);
+    expect(folder).toEqual(folders[0]);
     expect(folders[0].name).toBe("Work");
     expect(folders[0].id).toMatch(/^folder_/);
+    expect(folders[0].sortOrder).toBe(0);
     expect(folders[0].currentRevision).toBe(0);
+    expect(folders[0].updatedAt).toBe("2026-04-27T12:34:56.789Z");
     expect(folders[0].deletedAt).toBeNull();
   });
 
-  it("assigns sort order based on the current folder count", () => {
-    useFoldersStore.getState().loadFolders([folder1]);
-    const folder = useFoldersStore.getState().addFolder("Work");
-    expect(folder.sortOrder).toBe(1);
-  });
-
   it("soft-deletes a folder optimistically", () => {
-    useFoldersStore.getState().loadFolders([folder1]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+
+    useFoldersStore.getState().loadFolders([folder1, folder2]);
     useFoldersStore.getState().deleteFolder("folder_1");
     const folders = useFoldersStore.getState().folders;
-    expect(folders[0].deletedAt).not.toBeNull();
+
+    expect(folders[0]).toEqual({
+      ...folder1,
+      deletedAt: "2026-04-27T12:34:56.789Z",
+    });
+    expect(folders[1]).toEqual(folder2);
   });
 });

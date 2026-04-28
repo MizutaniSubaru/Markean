@@ -27,6 +27,13 @@ export class MarkeanWebDatabase extends Dexie {
       pendingChanges: "clientChangeId, entityId, operation",
       syncState: "key",
     });
+
+    this.version(3).stores({
+      notes: "id, folderId, updatedAt",
+      folders: "id, sortOrder",
+      pendingChanges: "clientChangeId, queuedOrder, entityId, operation",
+      syncState: "key",
+    });
   }
 }
 

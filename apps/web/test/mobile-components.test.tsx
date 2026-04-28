@@ -1,6 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
-import type { NoteRecord } from "@markean/domain";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("../src/features/notes/components/editor/MarkeanEditor", () => ({
@@ -19,6 +18,7 @@ vi.mock("../src/features/notes/components/editor/MarkeanEditor", () => ({
   ),
 }));
 
+import type { NoteRecord } from "@markean/domain";
 import { MobileEditor } from "../src/features/notes/components/mobile/MobileEditor";
 import { MobileFolders } from "../src/features/notes/components/mobile/MobileFolders";
 import { MobileNoteList } from "../src/features/notes/components/mobile/MobileNoteList";
@@ -136,7 +136,7 @@ describe("mobile components", () => {
       title: "Welcome to Markean",
       bodyMd: "Initial body",
       bodyPlain: "Initial body",
-      currentRevision: 1,
+      currentRevision: 0,
       updatedAt: "2026-04-20T10:30:00.000Z",
       deletedAt: null,
     };
@@ -152,9 +152,9 @@ describe("mobile components", () => {
 
     expect(screen.getByRole("button", { name: "Inbox" })).toHaveTextContent("Inbox");
     expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
-    expect(screen.getByRole("textbox")).toHaveTextContent("Initial body");
+    expect(screen.getByRole("textbox", { name: "Editor" })).toHaveValue("Initial body");
 
-    fireEvent.change(screen.getByRole("textbox"), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Editor" }), {
       target: { value: "Updated body" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Inbox" }));

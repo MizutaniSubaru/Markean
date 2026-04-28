@@ -22,7 +22,9 @@ type SyncableDatabase = {
   syncState: {
     get(key: string): Promise<{ key: string; value: string } | undefined>;
     put(value: { key: string; value: string }): Promise<unknown>;
+    delete?(key: string): Promise<unknown>;
   };
+  transaction?: unknown;
 };
 
 type ApiClient = {
@@ -54,17 +56,342 @@ type ApiClient = {
   }>;
 };
 
-type SyncConflict = {
-  entityType: string;
-  entityId: string;
-  serverRevision: number;
+type SyncApplyOptions = {
+  shouldApply?: () => boolean;
 };
 
-export function queueChange(
+type PreparedPendingChange = {
+  change: PendingChange;
+  payload: Record<string, unknown> | null;
+  noteFolderId: string | null;
+};
+
+type DependencyOrder = -1 | 0 | 1;
+
+function shouldApply(options?: SyncApplyOptions): boolean {
+  return options?.shouldApply?.() ?? true;
+}
+
+class StaleSyncApplicationError extends Error {
+  constructor() {
+    super("Stale sync application");
+  }
+}
+
+function assertShouldApply(options: SyncApplyOptions): void {
+  if (!shouldApply(options)) {
+    throw new StaleSyncApplicationError();
+  }
+}
+
+function parseStoredCursor(value: string | undefined): number {
+  if (!value) return 0;
+  const cursor = Number(value);
+  return Number.isFinite(cursor) ? cursor : 0;
+}
+
+function getQueuedOrder(change: PendingChange): number | null {
+  return typeof change.queuedOrder === "number" && Number.isFinite(change.queuedOrder)
+    ? change.queuedOrder
+    : null;
+}
+
+function operationRank(operation: PendingChange["operation"]): number {
+  if (operation === "create") return 0;
+  if (operation === "update") return 1;
+  return 2;
+}
+
+function entityTypeRank(entityType: PendingChange["entityType"]): number {
+  return entityType === "folder" ? 0 : 1;
+}
+
+function payloadString(
+  prepared: PreparedPendingChange,
+  field: string,
+): string | null {
+  const value = prepared.payload?.[field];
+  return typeof value === "string" ? value : null;
+}
+
+function getLegacyFolderDeleteDependencyOrder(
+  a: PreparedPendingChange,
+  b: PreparedPendingChange,
+): DependencyOrder {
+  if (getQueuedOrder(a.change) !== null || getQueuedOrder(b.change) !== null) return 0;
+
+  if (
+    a.change.entityType === "folder" &&
+    a.change.operation === "delete" &&
+    b.change.entityType === "note" &&
+    b.noteFolderId === a.change.entityId
+  ) {
+    return 1;
+  }
+
+  if (
+    b.change.entityType === "folder" &&
+    b.change.operation === "delete" &&
+    a.change.entityType === "note" &&
+    a.noteFolderId === b.change.entityId
+  ) {
+    return -1;
+  }
+
+  return 0;
+}
+
+function getKnownDependencyOrder(
+  a: PreparedPendingChange,
+  b: PreparedPendingChange,
+): DependencyOrder {
+  if (a.change.entityType === b.change.entityType && a.change.entityId === b.change.entityId) {
+    if (a.change.operation === "create" && b.change.operation !== "create") return -1;
+    if (b.change.operation === "create" && a.change.operation !== "create") return 1;
+  }
+
+  if (
+    a.change.entityType === "folder" &&
+    a.change.operation === "create" &&
+    b.change.entityType === "note" &&
+    b.change.operation === "create" &&
+    payloadString(b, "folderId") === a.change.entityId
+  ) {
+    return -1;
+  }
+
+  if (
+    b.change.entityType === "folder" &&
+    b.change.operation === "create" &&
+    a.change.entityType === "note" &&
+    a.change.operation === "create" &&
+    payloadString(a, "folderId") === b.change.entityId
+  ) {
+    return 1;
+  }
+
+  return 0;
+}
+
+function compareQueueOrder(a: PreparedPendingChange, b: PreparedPendingChange): number {
+  const aQueuedOrder = getQueuedOrder(a.change);
+  const bQueuedOrder = getQueuedOrder(b.change);
+
+  if (aQueuedOrder === null && bQueuedOrder === null) return 0;
+  if (aQueuedOrder === null) return -1;
+  if (bQueuedOrder === null) return 1;
+  return aQueuedOrder - bQueuedOrder;
+}
+
+function compareDeterministicFallback(
+  a: PreparedPendingChange,
+  b: PreparedPendingChange,
+): number {
+  const entityTypeDifference =
+    entityTypeRank(a.change.entityType) - entityTypeRank(b.change.entityType);
+  if (entityTypeDifference !== 0) return entityTypeDifference;
+
+  const entityIdDifference = a.change.entityId.localeCompare(b.change.entityId);
+  if (entityIdDifference !== 0) return entityIdDifference;
+
+  const operationDifference =
+    operationRank(a.change.operation) - operationRank(b.change.operation);
+  if (operationDifference !== 0) return operationDifference;
+
+  return a.change.clientChangeId.localeCompare(b.change.clientChangeId);
+}
+
+function comparePendingChangeBaseOrder(a: PreparedPendingChange, b: PreparedPendingChange): number {
+  const queuedOrder = compareQueueOrder(a, b);
+  if (queuedOrder !== 0) return queuedOrder;
+
+  return compareDeterministicFallback(a, b);
+}
+
+function getDependencyOrder(a: PreparedPendingChange, b: PreparedPendingChange): DependencyOrder {
+  const knownOrder = getKnownDependencyOrder(a, b);
+  if (knownOrder !== 0) return knownOrder;
+
+  return getLegacyFolderDeleteDependencyOrder(a, b);
+}
+
+function orderPendingChanges(pending: PreparedPendingChange[]): PreparedPendingChange[] {
+  const baseOrdered = [...pending].sort(comparePendingChangeBaseOrder);
+  const outgoingDependencies = baseOrdered.map(() => new Set<number>());
+  const inDegree = baseOrdered.map(() => 0);
+
+  const addDependency = (beforeIndex: number, afterIndex: number): void => {
+    const beforeDependencies = outgoingDependencies[beforeIndex];
+    if (!beforeDependencies || beforeIndex === afterIndex || beforeDependencies.has(afterIndex)) {
+      return;
+    }
+    beforeDependencies.add(afterIndex);
+    inDegree[afterIndex] = (inDegree[afterIndex] ?? 0) + 1;
+  };
+
+  for (let leftIndex = 0; leftIndex < baseOrdered.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < baseOrdered.length; rightIndex += 1) {
+      const dependencyOrder = getDependencyOrder(baseOrdered[leftIndex]!, baseOrdered[rightIndex]!);
+      if (dependencyOrder < 0) {
+        addDependency(leftIndex, rightIndex);
+      } else if (dependencyOrder > 0) {
+        addDependency(rightIndex, leftIndex);
+      }
+    }
+  }
+
+  const emitted = baseOrdered.map(() => false);
+  const ordered: PreparedPendingChange[] = [];
+
+  while (ordered.length < baseOrdered.length) {
+    const nextIndex = inDegree.findIndex((degree, index) => degree === 0 && !emitted[index]);
+    if (nextIndex === -1) {
+      // Keep legacy sync deterministic even if unexpected data produces a dependency cycle.
+      for (const [index, prepared] of baseOrdered.entries()) {
+        if (!emitted[index]) ordered.push(prepared);
+      }
+      break;
+    }
+
+    emitted[nextIndex] = true;
+    ordered.push(baseOrdered[nextIndex]!);
+    for (const dependentIndex of outgoingDependencies[nextIndex] ?? []) {
+      inDegree[dependentIndex] = (inDegree[dependentIndex] ?? 0) - 1;
+    }
+  }
+
+  return ordered;
+}
+
+let lastQueuedOrder = 0;
+
+async function nextQueuedOrder(db: SyncableDatabase): Promise<number> {
+  const pending = await db.pendingChanges.toArray();
+  const highestPersistedOrder = pending.reduce((highest, change) => {
+    const queuedOrder = getQueuedOrder(change);
+    return queuedOrder === null ? highest : Math.max(highest, queuedOrder);
+  }, 0);
+
+  lastQueuedOrder = Math.max(highestPersistedOrder, lastQueuedOrder, Date.now()) + 1;
+  return lastQueuedOrder;
+}
+
+function hasTransaction(
   db: SyncableDatabase,
-  input: Omit<PendingChange, "clientChangeId">,
+): db is SyncableDatabase & { transaction: (...args: unknown[]) => Promise<unknown> } {
+  return typeof db.transaction === "function";
+}
+
+async function applyLocalSyncChanges(
+  db: SyncableDatabase,
+  options: SyncApplyOptions,
+  apply: () => Promise<void>,
+): Promise<boolean> {
+  try {
+    if (hasTransaction(db)) {
+      await db.transaction(
+        "rw",
+        db.notes,
+        db.folders,
+        db.pendingChanges,
+        db.syncState,
+        async () => {
+          assertShouldApply(options);
+          await apply();
+          assertShouldApply(options);
+        },
+      );
+      return true;
+    }
+
+    assertShouldApply(options);
+    await apply();
+    assertShouldApply(options);
+    return true;
+  } catch (error) {
+    if (error instanceof StaleSyncApplicationError) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function applyAcceptedPushChanges(
+  db: SyncableDatabase,
+  acceptedChanges: PendingChange[],
+  accepted: Array<{ acceptedRevision: number; cursor: number }>,
+): Promise<void> {
+  await applyLocalSyncChanges(db, {}, async () => {
+    for (const [index, serverAccepted] of accepted.entries()) {
+      const change = acceptedChanges[index];
+      if (!change) continue;
+
+      if (change.entityType === "note") {
+        await db.notes.update(change.entityId, {
+          currentRevision: serverAccepted.acceptedRevision,
+        });
+      } else {
+        await db.folders.update(change.entityId, {
+          currentRevision: serverAccepted.acceptedRevision,
+        });
+      }
+    }
+
+    if (accepted.length > 0) {
+      const acceptedIds = acceptedChanges.map((change) => change.clientChangeId);
+      await db.pendingChanges.where("clientChangeId").anyOf(acceptedIds).delete();
+    }
+  });
+}
+
+export async function queueChange(
+  db: SyncableDatabase,
+  input: Omit<PendingChange, "clientChangeId" | "queuedOrder">,
 ): Promise<unknown> {
-  const change = createPendingChange(input);
+  const pending = await db.pendingChanges.toArray();
+  const sameEntityChanges = pending.filter(
+    (change) => change.entityType === input.entityType && change.entityId === input.entityId,
+  );
+
+  if (sameEntityChanges.length > 0) {
+    const existingCreate = sameEntityChanges.find((change) => change.operation === "create");
+    if (existingCreate) {
+      if (input.operation === "delete") {
+        await db.pendingChanges
+          .where("clientChangeId")
+          .anyOf(sameEntityChanges.map((change) => change.clientChangeId))
+          .delete();
+      }
+
+      return undefined;
+    }
+
+    const existingDelete = sameEntityChanges.find((change) => change.operation === "delete");
+    if (existingDelete) {
+      return undefined;
+    }
+
+    const existingUpdate = sameEntityChanges.find((change) => change.operation === "update");
+    if (existingUpdate) {
+      if (input.operation === "update") {
+        return undefined;
+      }
+
+      await db.pendingChanges
+        .where("clientChangeId")
+        .anyOf(sameEntityChanges.map((change) => change.clientChangeId))
+        .delete();
+      const queuedOrder = getQueuedOrder(existingUpdate) ?? (await nextQueuedOrder(db));
+      const change = createPendingChange({
+        ...input,
+        baseRevision: existingUpdate.baseRevision,
+        queuedOrder,
+      });
+      return db.pendingChanges.put(change);
+    }
+  }
+
+  const change = createPendingChange({ ...input, queuedOrder: await nextQueuedOrder(db) });
   return db.pendingChanges.put(change);
 }
 
@@ -72,61 +399,56 @@ export async function pushChanges(
   db: SyncableDatabase,
   apiClient: ApiClient,
   deviceId: string,
-): Promise<{ conflicts: SyncConflict[] }> {
+  options: SyncApplyOptions = {},
+): Promise<{ conflicts: Array<{ entityType: string; entityId: string; serverRevision: number }> }> {
   const pending = await db.pendingChanges.toArray();
   if (pending.length === 0) return { conflicts: [] };
+  if (!shouldApply(options)) return { conflicts: [] };
 
-  const changes = [];
+  const preparedChanges: PreparedPendingChange[] = [];
   for (const p of pending) {
     let payload: Record<string, unknown> | null = null;
+    let noteFolderId: string | null = null;
 
-    if (p.operation !== "delete") {
-      if (p.entityType === "note") {
-        const note = await db.notes.get(p.entityId);
-        if (note) {
+    if (p.entityType === "note") {
+      if (!shouldApply(options)) return { conflicts: [] };
+      const note = await db.notes.get(p.entityId);
+      if (!shouldApply(options)) return { conflicts: [] };
+      if (note) {
+        noteFolderId = note.folderId;
+        if (p.operation !== "delete") {
           payload = { folderId: note.folderId, title: note.title, bodyMd: note.bodyMd };
         }
-      } else {
-        const folder = await db.folders.get(p.entityId);
-        if (folder) {
-          payload = { name: folder.name, sortOrder: folder.sortOrder };
-        }
+      }
+    } else if (p.operation !== "delete") {
+      if (!shouldApply(options)) return { conflicts: [] };
+      const folder = await db.folders.get(p.entityId);
+      if (!shouldApply(options)) return { conflicts: [] };
+      if (folder) {
+        payload = { name: folder.name, sortOrder: folder.sortOrder };
       }
     }
 
-    changes.push({
-      clientChangeId: p.clientChangeId,
-      entityType: p.entityType,
-      entityId: p.entityId,
-      operation: p.operation,
-      baseRevision: p.baseRevision,
-      payload,
-    });
+    preparedChanges.push({ change: p, payload, noteFolderId });
   }
 
+  const orderedChanges = orderPendingChanges(preparedChanges);
+  const changes = orderedChanges.map(({ change, payload }) => ({
+    clientChangeId: change.clientChangeId,
+    entityType: change.entityType,
+    entityId: change.entityId,
+    operation: change.operation,
+    baseRevision: change.baseRevision,
+    payload,
+  }));
+
+  if (!shouldApply(options)) return { conflicts: [] };
   const result = await apiClient.syncPush({ deviceId, changes });
-  const acceptedChanges = pending.slice(0, result.accepted.length);
+  const acceptedChanges = orderedChanges
+    .map(({ change }) => change)
+    .slice(0, result.accepted.length);
 
-  for (const [index, accepted] of result.accepted.entries()) {
-    const change = acceptedChanges[index];
-    if (!change) continue;
-
-    if (change.entityType === "note") {
-      await db.notes.update(change.entityId, { currentRevision: accepted.acceptedRevision });
-    } else {
-      await db.folders.update(change.entityId, { currentRevision: accepted.acceptedRevision });
-    }
-  }
-
-  if (result.accepted.length > 0) {
-    const acceptedIds = acceptedChanges.map((p) => p.clientChangeId);
-    await db.pendingChanges.where("clientChangeId").anyOf(acceptedIds).delete();
-  }
-
-  const latestCursor = result.accepted.at(-1)?.cursor;
-  if (latestCursor !== undefined) {
-    await db.syncState.put({ key: "syncCursor", value: String(latestCursor) });
-  }
+  await applyAcceptedPushChanges(db, acceptedChanges, result.accepted);
 
   return { conflicts: result.conflicts ?? [] };
 }
@@ -135,66 +457,128 @@ export async function pullChanges(
   db: SyncableDatabase,
   apiClient: ApiClient,
   deviceId: string,
+  options: SyncApplyOptions = {},
 ): Promise<void> {
   const cursorRecord = await db.syncState.get("syncCursor");
-  const cursor = cursorRecord ? Number(cursorRecord.value) : 0;
+  const cursor = parseStoredCursor(cursorRecord?.value);
 
   const result = await apiClient.syncPull(cursor);
+  if (!shouldApply(options)) return;
 
-  for (const event of result.events) {
-    if (event.sourceDeviceId === deviceId) continue;
+  await applyLocalSyncChanges(db, options, async () => {
+    const currentCursorRecord = await db.syncState.get("syncCursor");
+    const currentCursor = parseStoredCursor(currentCursorRecord?.value);
+    for (const event of result.events) {
+      if (event.cursor <= currentCursor) continue;
+      if (event.sourceDeviceId === deviceId) continue;
+      assertShouldApply(options);
 
-    if (event.operation === "delete") {
-      if (event.entityType === "note") {
-        await db.notes.update(event.entityId, { deletedAt: new Date().toISOString() });
-      } else {
-        await db.folders.update(event.entityId, { deletedAt: new Date().toISOString() });
+      if (event.operation === "delete") {
+        if (event.entityType === "note") {
+          await db.notes.update(event.entityId, { deletedAt: new Date().toISOString() });
+        } else {
+          await db.folders.update(event.entityId, { deletedAt: new Date().toISOString() });
+        }
+        assertShouldApply(options);
+        continue;
       }
-      continue;
+
+      if (!event.entity) continue;
+
+      if (event.entityType === "note") {
+        assertShouldApply(options);
+        await db.notes.put({
+          id: event.entity.id as string,
+          folderId: event.entity.folderId as string,
+          title: event.entity.title as string,
+          bodyMd: event.entity.bodyMd as string,
+          bodyPlain: event.entity.bodyPlain as string,
+          currentRevision: event.entity.currentRevision as number,
+          updatedAt: event.entity.updatedAt as string,
+          deletedAt: (event.entity.deletedAt as string) ?? null,
+        });
+        assertShouldApply(options);
+      } else {
+        assertShouldApply(options);
+        await db.folders.put({
+          id: event.entity.id as string,
+          name: event.entity.name as string,
+          sortOrder: event.entity.sortOrder as number,
+          currentRevision: event.entity.currentRevision as number,
+          updatedAt: event.entity.updatedAt as string,
+          deletedAt: (event.entity.deletedAt as string) ?? null,
+        });
+        assertShouldApply(options);
+      }
     }
 
-    if (!event.entity) continue;
+    assertShouldApply(options);
+    await db.syncState.put({
+      key: "syncCursor",
+      value: String(Math.max(currentCursor, result.nextCursor)),
+    });
+    assertShouldApply(options);
+  });
+}
 
-    if (event.entityType === "note") {
-      await db.notes.put({
-        id: event.entity.id as string,
-        folderId: event.entity.folderId as string,
-        title: event.entity.title as string,
-        bodyMd: event.entity.bodyMd as string,
-        bodyPlain: event.entity.bodyPlain as string,
-        currentRevision: event.entity.currentRevision as number,
-        updatedAt: event.entity.updatedAt as string,
-        deletedAt: (event.entity.deletedAt as string) ?? null,
+export function getDeviceId(db: SyncableDatabase): Promise<string>;
+export function getDeviceId(
+  db: SyncableDatabase,
+  options: SyncApplyOptions,
+): Promise<string | null>;
+export async function getDeviceId(
+  db: SyncableDatabase,
+  options: SyncApplyOptions = {},
+): Promise<string | null> {
+  if (hasTransaction(db)) {
+    let deviceId: string | null = null;
+    try {
+      await db.transaction("rw", db.syncState, async () => {
+        const existing = await db.syncState.get("deviceId");
+        if (existing) {
+          deviceId = existing.value;
+          return;
+        }
+
+        assertShouldApply(options);
+        const generatedDeviceId = `dev_${crypto.randomUUID()}`;
+        assertShouldApply(options);
+        await db.syncState.put({ key: "deviceId", value: generatedDeviceId });
+        assertShouldApply(options);
+        deviceId = generatedDeviceId;
       });
-    } else {
-      await db.folders.put({
-        id: event.entity.id as string,
-        name: event.entity.name as string,
-        sortOrder: event.entity.sortOrder as number,
-        currentRevision: event.entity.currentRevision as number,
-        updatedAt: event.entity.updatedAt as string,
-        deletedAt: (event.entity.deletedAt as string) ?? null,
-      });
+      return deviceId;
+    } catch (error) {
+      if (error instanceof StaleSyncApplicationError) {
+        return null;
+      }
+      throw error;
     }
   }
 
-  await db.syncState.put({ key: "syncCursor", value: String(result.nextCursor) });
-}
-
-export async function getDeviceId(db: SyncableDatabase): Promise<string> {
   const existing = await db.syncState.get("deviceId");
   if (existing) return existing.value;
 
+  if (!shouldApply(options)) return null;
   const deviceId = `dev_${crypto.randomUUID()}`;
+  if (!shouldApply(options)) return null;
   await db.syncState.put({ key: "deviceId", value: deviceId });
+  if (!shouldApply(options)) {
+    const stored = await db.syncState.get("deviceId");
+    if (stored?.value === deviceId && db.syncState.delete) {
+      await db.syncState.delete("deviceId");
+    }
+    return null;
+  }
   return deviceId;
 }
 
 export async function runSyncCycle(
   db: SyncableDatabase,
   apiClient: ApiClient,
-): Promise<{ conflicts: SyncConflict[] }> {
+): Promise<{ conflicts: Array<{ entityType: string; entityId: string; serverRevision: number }> }> {
   const deviceId = await getDeviceId(db);
+  if (!deviceId) return { conflicts: [] };
   const { conflicts } = await pushChanges(db, apiClient, deviceId);
   await pullChanges(db, apiClient, deviceId);
   return { conflicts };

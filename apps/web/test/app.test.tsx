@@ -1,18 +1,42 @@
-import "fake-indexeddb/auto";
-
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FolderRecord, NoteRecord } from "@markean/domain";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { App } from "../src/app/App";
 import { useEditorStore } from "../src/features/notes/store/editor.store";
 import { useFoldersStore } from "../src/features/notes/store/folders.store";
 import { useNotesStore } from "../src/features/notes/store/notes.store";
 import { useSyncStore } from "../src/features/notes/store/sync.store";
 
-const createNoteMock = vi.fn().mockResolvedValue(undefined);
-const updateNoteMock = vi.fn().mockResolvedValue(undefined);
-const createFolderMock = vi.fn().mockResolvedValue(undefined);
-const requestSyncMock = vi.fn();
+const { foldersPersistence, notesPersistence, schedulerState } = vi.hoisted(() => ({
+  foldersPersistence: {
+    createFolder: vi.fn(),
+    getAllFolders: vi.fn(),
+  },
+  notesPersistence: {
+    createNote: vi.fn(),
+    getAllNotes: vi.fn(),
+    updateNote: vi.fn(),
+  },
+  schedulerState: {
+    scheduler: null as null | { requestSync: ReturnType<typeof vi.fn> },
+  },
+}));
+
+vi.mock("../src/app/bootstrap", () => ({
+  getScheduler: () => schedulerState.scheduler,
+}));
+
+vi.mock("../src/features/notes/persistence/folders.persistence", () => ({
+  createFolder: foldersPersistence.createFolder,
+  getAllFolders: foldersPersistence.getAllFolders,
+}));
+
+vi.mock("../src/features/notes/persistence/notes.persistence", () => ({
+  createNote: notesPersistence.createNote,
+  getAllNotes: notesPersistence.getAllNotes,
+  updateNote: notesPersistence.updateNote,
+}));
 
 vi.mock("../src/features/notes/components/editor/MarkeanEditor", () => ({
   MarkeanEditor: ({
@@ -30,26 +54,30 @@ vi.mock("../src/features/notes/components/editor/MarkeanEditor", () => ({
   ),
 }));
 
-vi.mock("../src/app/bootstrap", () => ({
-  getScheduler: () => ({ requestSync: requestSyncMock }),
-}));
+function folder(overrides: Partial<FolderRecord> & Pick<FolderRecord, "id" | "name">): FolderRecord {
+  return {
+    sortOrder: 0,
+    currentRevision: 1,
+    updatedAt: "2026-04-27T12:00:00.000Z",
+    deletedAt: null,
+    ...overrides,
+  };
+}
 
-vi.mock("../src/features/notes/persistence/notes.persistence", () => ({
-  createNote: (...args: unknown[]) => createNoteMock(...args),
-  updateNote: (...args: unknown[]) => updateNoteMock(...args),
-  getAllNotes: vi.fn().mockResolvedValue([]),
-}));
+function note(overrides: Partial<NoteRecord> & Pick<NoteRecord, "id" | "folderId">): NoteRecord {
+  const bodyMd = overrides.bodyMd ?? "";
+  return {
+    title: overrides.id,
+    bodyMd,
+    bodyPlain: bodyMd.replace(/[#*_`>-]/g, "").replace(/\n+/g, " ").trim(),
+    currentRevision: 1,
+    updatedAt: "2026-04-27T12:00:00.000Z",
+    deletedAt: null,
+    ...overrides,
+  };
+}
 
-vi.mock("../src/features/notes/persistence/folders.persistence", () => ({
-  createFolder: (...args: unknown[]) => createFolderMock(...args),
-  getAllFolders: vi.fn().mockResolvedValue([]),
-}));
-
-import { App } from "../src/app/App";
-
-type MatchMediaOptions = { matches: boolean };
-
-function mockMatchMedia({ matches }: MatchMediaOptions) {
+function mockMatchMedia(matches: boolean): void {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
     value: vi.fn().mockImplementation((query: string) => ({
@@ -65,129 +93,163 @@ function mockMatchMedia({ matches }: MatchMediaOptions) {
   });
 }
 
-const defaultFolder: FolderRecord = {
-  id: "notes",
-  name: "Notes",
-  sortOrder: 0,
-  currentRevision: 1,
-  updatedAt: "2026-04-20T09:00:00.000Z",
-  deletedAt: null,
-};
+function resetStores(): void {
+  useFoldersStore.setState({ folders: [] });
+  useNotesStore.setState({ notes: [] });
+  useEditorStore.setState({
+    activeFolderId: "",
+    activeNoteId: "",
+    searchQuery: "",
+    mobileView: "folders",
+    newNoteId: null,
+  });
+  useSyncStore.setState({
+    status: "idle",
+    isOnline: true,
+    lastSyncedAt: null,
+    activeRunId: null,
+  });
+}
 
-const welcomeNote: NoteRecord = {
-  id: "welcome-note",
-  folderId: "notes",
-  title: "Welcome to Markean",
-  bodyMd: "# Welcome to Markean\n\nHello!",
-  bodyPlain: "Welcome to Markean Hello!",
-  currentRevision: 1,
-  updatedAt: "2026-04-20T09:00:00.000Z",
-  deletedAt: null,
-};
+function seedWorkspace(): { folder: FolderRecord; note: NoteRecord } {
+  const workspaceFolder = folder({ id: "folder_notes", name: "Notes" });
+  const workspaceNote = note({
+    id: "note_welcome",
+    folderId: workspaceFolder.id,
+    title: "Welcome to Markean",
+    bodyMd: "# Welcome to Markean\n\nStart here.",
+    bodyPlain: "Welcome to Markean Start here.",
+  });
 
-function seedStores(options?: { folders?: FolderRecord[]; notes?: NoteRecord[] }) {
-  const folders = options?.folders ?? [defaultFolder];
-  const notes = options?.notes ?? [welcomeNote];
-  useFoldersStore.getState().loadFolders(folders);
-  useNotesStore.getState().loadNotes(notes);
-  const activeFolder = folders.find((folder) => !folder.deletedAt);
-  if (activeFolder) {
-    useEditorStore.getState().selectFolder(activeFolder.id);
-    const firstNote = notes.find((note) => note.folderId === activeFolder.id && !note.deletedAt);
-    if (firstNote) {
-      useEditorStore.getState().selectNote(firstNote.id);
-    }
-  }
+  useFoldersStore.getState().loadFolders([workspaceFolder]);
+  useNotesStore.getState().loadNotes([workspaceNote]);
+  useEditorStore.setState({
+    activeFolderId: workspaceFolder.id,
+    activeNoteId: workspaceNote.id,
+    searchQuery: "",
+    mobileView: "editor",
+    newNoteId: null,
+  });
+
+  return { folder: workspaceFolder, note: workspaceNote };
 }
 
 describe("App", () => {
+  beforeEach(() => {
+    resetStores();
+    mockMatchMedia(false);
+    schedulerState.scheduler = { requestSync: vi.fn() };
+    foldersPersistence.createFolder.mockReset().mockResolvedValue(undefined);
+    foldersPersistence.getAllFolders.mockReset().mockResolvedValue([]);
+    notesPersistence.createNote.mockReset().mockResolvedValue(undefined);
+    notesPersistence.getAllNotes.mockReset().mockResolvedValue([]);
+    notesPersistence.updateNote.mockReset().mockResolvedValue(true);
+  });
+
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
-    createNoteMock.mockClear();
-    updateNoteMock.mockClear();
-    createFolderMock.mockClear();
-    requestSyncMock.mockClear();
-    useNotesStore.setState({ notes: [] });
-    useFoldersStore.setState({ folders: [] });
-    useEditorStore.setState({
-      activeFolderId: "",
-      activeNoteId: "",
-      searchQuery: "",
-      mobileView: "folders",
-      newNoteId: null,
-    });
-    useSyncStore.setState({ status: "idle", isOnline: true, lastSyncedAt: null });
+    resetStores();
+    schedulerState.scheduler = null;
   });
 
-  it("renders the desktop workspace with a note", () => {
-    mockMatchMedia({ matches: false });
-    seedStores();
+  it("renders the desktop workspace with a seeded note", () => {
+    const { note: seededNote } = seedWorkspace();
 
     render(<App />);
 
-    expect(screen.getByText("Folders")).toBeInTheDocument();
-    expect(screen.getByText("Welcome to Markean")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Folders" })).toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: "Search" })).toBeInTheDocument();
+    expect(screen.getByText("1 notes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /welcome to markean/i })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Editor" })).toHaveValue(seededNote.bodyMd);
   });
 
-  it("renders the mobile folders view", () => {
-    mockMatchMedia({ matches: true });
-    seedStores();
+  it("renders the mobile folders view from the folder store", () => {
+    const notesFolder = folder({ id: "folder_notes", name: "Notes", sortOrder: 0 });
+    const archiveFolder = folder({ id: "folder_archive", name: "Archive", sortOrder: 1 });
+    useFoldersStore.getState().loadFolders([notesFolder, archiveFolder]);
+    useNotesStore.getState().loadNotes([
+      note({
+        id: "note_welcome",
+        folderId: notesFolder.id,
+        title: "Welcome to Markean",
+        bodyMd: "# Welcome to Markean",
+      }),
+    ]);
+    useEditorStore.setState({ activeFolderId: notesFolder.id, activeNoteId: "note_welcome" });
+    mockMatchMedia(true);
 
     render(<App />);
 
     expect(screen.getAllByText("Folders")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: /notes/i })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: /archive/i })).toHaveTextContent("0");
+    expect(screen.getByRole("searchbox", { name: "Search" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New Note" })).toBeInTheDocument();
   });
 
-  it("creates a new note when clicking New Note", async () => {
-    mockMatchMedia({ matches: false });
-    seedStores();
+  it("creates a store note from New Note and marks sync unsynced", async () => {
+    const { folder: seededFolder } = seedWorkspace();
 
     render(<App />);
-
     fireEvent.click(screen.getByRole("button", { name: "New Note" }));
 
     await waitFor(() => {
-      expect(useNotesStore.getState().notes).toHaveLength(2);
+      expect(notesPersistence.createNote).toHaveBeenCalledTimes(1);
       expect(useSyncStore.getState().status).toBe("unsynced");
-      expect(createNoteMock).toHaveBeenCalledTimes(1);
-      expect(requestSyncMock).toHaveBeenCalledTimes(1);
     });
+
+    const [createdNote] = useNotesStore.getState().notes;
+    expect(createdNote).toMatchObject({
+      folderId: seededFolder.id,
+      title: "",
+      bodyMd: "",
+      bodyPlain: "",
+      currentRevision: 0,
+      deletedAt: null,
+    });
+    expect(createdNote.id).toMatch(/^note_/);
+    expect(useNotesStore.getState().notes).toHaveLength(2);
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: seededFolder.id,
+      activeNoteId: createdNote.id,
+      searchQuery: "",
+      mobileView: "editor",
+      newNoteId: createdNote.id,
+    });
+    expect(notesPersistence.createNote).toHaveBeenCalledWith(createdNote);
+    expect(schedulerState.scheduler?.requestSync).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("2 notes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /untitled/i })).toBeInTheDocument();
   });
 
-  it("creates a folder when clicking the add-folder button", async () => {
-    mockMatchMedia({ matches: false });
-    seedStores();
-    vi.stubGlobal("prompt", vi.fn().mockReturnValue("Work"));
+  it("updates the active note body in the store when editing", async () => {
+    const { note: seededNote } = seedWorkspace();
+    const nextBody = "# Updated welcome note\n\nMore detail.";
 
     render(<App />);
-
-    const buttons = screen.getAllByRole("button");
-    fireEvent.click(buttons[0]);
-
-    await waitFor(() => {
-      expect(useFoldersStore.getState().folders).toHaveLength(2);
-      expect(useFoldersStore.getState().folders[1].name).toBe("Work");
-      expect(createFolderMock).toHaveBeenCalledTimes(1);
-      expect(requestSyncMock).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  it("updates note body when editing", async () => {
-    mockMatchMedia({ matches: false });
-    seedStores();
-
-    render(<App />);
-
     fireEvent.change(screen.getByRole("textbox", { name: "Editor" }), {
-      target: { value: "# Updated content" },
+      target: { value: nextBody },
     });
 
     await waitFor(() => {
-      const note = useNotesStore.getState().notes.find((candidate) => candidate.id === "welcome-note");
-      expect(note?.bodyMd).toBe("# Updated content");
-      expect(updateNoteMock).toHaveBeenCalledTimes(1);
+      expect(useNotesStore.getState().notes.find((existing) => existing.id === seededNote.id))
+        .toMatchObject({
+          bodyMd: nextBody,
+          bodyPlain: "Updated welcome note More detail.",
+          title: "Updated welcome note",
+        });
+    });
+    await waitFor(() => {
+      expect(notesPersistence.updateNote).toHaveBeenCalledWith(seededNote.id, {
+        bodyMd: nextBody,
+        bodyPlain: "Updated welcome note More detail.",
+        title: "Updated welcome note",
+      });
       expect(useSyncStore.getState().status).toBe("unsynced");
     });
+    expect(schedulerState.scheduler?.requestSync).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: /updated welcome note/i })).toBeInTheDocument();
   });
 });

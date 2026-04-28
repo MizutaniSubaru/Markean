@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NoteRecord } from "@markean/domain";
 import { useNotesStore } from "../../src/features/notes/store/notes.store";
 
@@ -13,8 +13,20 @@ const note1: NoteRecord = {
   deletedAt: null,
 };
 
+const note2: NoteRecord = {
+  id: "note_2",
+  folderId: "folder_2",
+  title: "Second",
+  bodyMd: "Second",
+  bodyPlain: "Second",
+  currentRevision: 2,
+  updatedAt: "2026-04-22T10:00:00.000Z",
+  deletedAt: null,
+};
+
 describe("notes.store", () => {
   afterEach(() => {
+    vi.useRealTimers();
     useNotesStore.setState({ notes: [] });
   });
 
@@ -27,35 +39,107 @@ describe("notes.store", () => {
     expect(useNotesStore.getState().notes).toEqual([note1]);
   });
 
+  it("isolates loaded notes from source array mutation", () => {
+    const sourceNotes = [note1];
+
+    useNotesStore.getState().loadNotes(sourceNotes);
+    sourceNotes.push(note2);
+
+    expect(useNotesStore.getState().notes).toEqual([note1]);
+  });
+
+  it("isolates loaded notes from source record mutation", () => {
+    const sourceNote = { ...note1 };
+
+    useNotesStore.getState().loadNotes([sourceNote]);
+    sourceNote.title = "Mutated outside store";
+
+    expect(useNotesStore.getState().notes[0]).toEqual(note1);
+  });
+
   it("adds a note optimistically", () => {
-    useNotesStore.getState().addNote("folder_1");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    useNotesStore.getState().loadNotes([note1]);
+
+    const note = useNotesStore.getState().addNote("folder_1");
     const notes = useNotesStore.getState().notes;
-    expect(notes).toHaveLength(1);
+
+    expect(notes).toHaveLength(2);
+    expect(note).toEqual(notes[0]);
     expect(notes[0].folderId).toBe("folder_1");
     expect(notes[0].id).toMatch(/^note_/);
+    expect(notes[0].title).toBe("");
     expect(notes[0].bodyMd).toBe("");
+    expect(notes[0].bodyPlain).toBe("");
     expect(notes[0].currentRevision).toBe(0);
+    expect(notes[0].updatedAt).toBe("2026-04-27T12:34:56.789Z");
+    expect(notes[0].deletedAt).toBeNull();
+    expect(notes[1]).toEqual(note1);
   });
 
   it("updates a note optimistically", () => {
-    useNotesStore.getState().loadNotes([note1]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    useNotesStore.getState().loadNotes([note1, note2]);
+
     useNotesStore.getState().updateNote("note_1", { bodyMd: "# Updated", title: "Updated" });
-    const note = useNotesStore.getState().notes[0];
-    expect(note.bodyMd).toBe("# Updated");
-    expect(note.title).toBe("Updated");
-    expect(note.updatedAt).not.toBe(note1.updatedAt);
+    const notes = useNotesStore.getState().notes;
+
+    expect(notes[0]).toEqual({
+      ...note1,
+      bodyMd: "# Updated",
+      bodyPlain: "Updated",
+      title: "Updated",
+      updatedAt: "2026-04-27T12:34:56.789Z",
+    });
+    expect(notes[1]).toEqual(note2);
   });
 
-  it("recomputes bodyPlain when bodyMd changes", () => {
+  it("updates a note title without changing bodyPlain", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
     useNotesStore.getState().loadNotes([note1]);
-    useNotesStore.getState().updateNote("note_1", { bodyMd: "# Updated content" });
-    expect(useNotesStore.getState().notes[0].bodyPlain).toBe("Updated content");
+
+    useNotesStore.getState().updateNote("note_1", { title: "Renamed" });
+
+    expect(useNotesStore.getState().notes[0]).toEqual({
+      ...note1,
+      title: "Renamed",
+      bodyPlain: "Test",
+      updatedAt: "2026-04-27T12:34:56.789Z",
+    });
+  });
+
+  it("updates a note folder without changing title or bodyPlain", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    useNotesStore.getState().loadNotes([note1]);
+
+    useNotesStore.getState().updateNote("note_1", { folderId: "folder_2" });
+
+    expect(useNotesStore.getState().notes[0]).toEqual({
+      ...note1,
+      folderId: "folder_2",
+      title: "Test",
+      bodyPlain: "Test",
+      updatedAt: "2026-04-27T12:34:56.789Z",
+    });
   });
 
   it("soft-deletes a note optimistically", () => {
-    useNotesStore.getState().loadNotes([note1]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    useNotesStore.getState().loadNotes([note1, note2]);
+
     useNotesStore.getState().deleteNote("note_1");
-    expect(useNotesStore.getState().notes[0].deletedAt).not.toBeNull();
+    const notes = useNotesStore.getState().notes;
+
+    expect(notes[0]).toEqual({
+      ...note1,
+      deletedAt: "2026-04-27T12:34:56.789Z",
+    });
+    expect(notes[1]).toEqual(note2);
   });
 
   it("adds a conflict copy", () => {
@@ -66,7 +150,24 @@ describe("notes.store", () => {
       title: "Test (conflict copy)",
     };
     useNotesStore.getState().addConflictCopy(copy);
-    expect(useNotesStore.getState().notes).toHaveLength(2);
-    expect(useNotesStore.getState().notes[0].id).toBe("note_conflict_copy");
+    expect(useNotesStore.getState().notes).toEqual([copy, note1]);
+  });
+
+  it("isolates conflict copies from source record mutation", () => {
+    useNotesStore.getState().loadNotes([note1]);
+    const copy: NoteRecord = {
+      ...note1,
+      id: "note_conflict_copy",
+      title: "Test (conflict copy)",
+    };
+
+    useNotesStore.getState().addConflictCopy(copy);
+    copy.title = "Mutated outside store";
+
+    expect(useNotesStore.getState().notes[0]).toEqual({
+      ...note1,
+      id: "note_conflict_copy",
+      title: "Test (conflict copy)",
+    });
   });
 });

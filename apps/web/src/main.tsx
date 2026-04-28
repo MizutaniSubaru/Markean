@@ -13,13 +13,26 @@ if (!rootElement) {
   throw new Error("Root element not found");
 }
 
-void bootstrapApp().finally(() => {
-  createRoot(rootElement).render(
+const root = createRoot(rootElement);
+let didRender = false;
+
+function render() {
+  if (didRender) return;
+  didRender = true;
+
+  root.render(
     <StrictMode>
       <App />
     </StrictMode>,
   );
-});
+}
+
+bootstrapApp("", { onLocalReady: render })
+  .then(render)
+  .catch((error) => {
+    console.error(error);
+    render();
+  });
 
 if ("serviceWorker" in navigator) {
   void navigator.serviceWorker.register("/sw.js").catch(() => {});

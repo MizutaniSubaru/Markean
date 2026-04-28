@@ -4,6 +4,7 @@ export type PendingChange = {
   entityId: string;
   operation: "create" | "update" | "delete";
   baseRevision: number;
+  queuedOrder?: number;
 };
 
 export function createPendingChange(input: Omit<PendingChange, "clientChangeId">): PendingChange {

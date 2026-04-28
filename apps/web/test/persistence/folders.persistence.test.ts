@@ -1,73 +1,378 @@
 import "fake-indexeddb/auto";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createWebDatabase } from "@markean/storage-web";
-import type { MarkeanWebDatabase } from "@markean/storage-web";
-import type { FolderRecord } from "@markean/domain";
-import { initDb } from "../../src/features/notes/persistence/db";
+import type { FolderRecord, NoteRecord } from "@markean/domain";
+import { pushChanges } from "@markean/sync-core";
+import { createWebDatabase, type MarkeanWebDatabase } from "@markean/storage-web";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { initDb, resetDbForTests } from "../../src/features/notes/persistence/db";
 import {
   createFolder,
   deleteFolder,
   getAllFolders,
 } from "../../src/features/notes/persistence/folders.persistence";
+import { createNote } from "../../src/features/notes/persistence/notes.persistence";
+
+const folder1: FolderRecord = {
+  id: "folder_1",
+  name: "Notes",
+  sortOrder: 0,
+  currentRevision: 5,
+  updatedAt: "2026-04-21T09:00:00.000Z",
+  deletedAt: null,
+};
+
+const folder2: FolderRecord = {
+  id: "folder_2",
+  name: "Archive",
+  sortOrder: 1,
+  currentRevision: 6,
+  updatedAt: "2026-04-22T10:00:00.000Z",
+  deletedAt: null,
+};
+
+const noteInFolder1: NoteRecord = {
+  id: "note_1",
+  folderId: "folder_1",
+  title: "In folder",
+  bodyMd: "In folder",
+  bodyPlain: "In folder",
+  currentRevision: 3,
+  updatedAt: "2026-04-21T09:00:00.000Z",
+  deletedAt: null,
+};
+
+const secondNoteInFolder1: NoteRecord = {
+  id: "note_2",
+  folderId: "folder_1",
+  title: "Also in folder",
+  bodyMd: "Also in folder",
+  bodyPlain: "Also in folder",
+  currentRevision: 4,
+  updatedAt: "2026-04-21T10:00:00.000Z",
+  deletedAt: null,
+};
+
+const noteInFolder2: NoteRecord = {
+  id: "note_3",
+  folderId: "folder_2",
+  title: "Other folder",
+  bodyMd: "Other folder",
+  bodyPlain: "Other folder",
+  currentRevision: 7,
+  updatedAt: "2026-04-22T10:00:00.000Z",
+  deletedAt: null,
+};
 
 describe("folders.persistence", () => {
   let db: MarkeanWebDatabase;
 
-  const folder: FolderRecord = {
-    id: "folder_1",
-    name: "Notes",
-    sortOrder: 0,
-    currentRevision: 0,
-    updatedAt: "2026-04-21T09:00:00.000Z",
-    deletedAt: null,
-  };
-
   beforeEach(() => {
     db = createWebDatabase(`test-folders-persistence-${crypto.randomUUID()}`);
+    resetDbForTests();
     initDb(db);
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await db.delete();
+    resetDbForTests();
   });
 
-  it("creates a folder and queues a pending change", async () => {
-    await createFolder(folder);
+  it("creating a folder writes it and queues a create change", async () => {
+    await createFolder(folder1);
 
-    const stored = await db.folders.get("folder_1");
-    expect(stored).toMatchObject({ id: "folder_1", name: "Notes" });
-
+    expect(await db.folders.get("folder_1")).toEqual(folder1);
     const changes = await db.pendingChanges.toArray();
     expect(changes).toHaveLength(1);
-    expect(changes[0]).toMatchObject({
+    const [change] = changes;
+    expect(change).toMatchObject({
       entityType: "folder",
       entityId: "folder_1",
       operation: "create",
       baseRevision: 0,
     });
+    expect(change.clientChangeId).toMatch(/^chg_/);
+  });
+
+  it("rolls back folder creation when queueing the pending change fails", async () => {
+    db.pendingChanges.hook("creating", () => {
+      throw new Error("pending change failed");
+    });
+
+    await expect(createFolder(folder1)).rejects.toThrow("pending change failed");
+
+    await expect(db.folders.toArray()).resolves.toEqual([]);
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(0);
   });
 
   it("reads all folders", async () => {
-    await createFolder(folder);
-    const all = await getAllFolders();
-    expect(all).toHaveLength(1);
+    await db.folders.bulkPut([folder1, folder2]);
+
+    await expect(getAllFolders()).resolves.toEqual([folder1, folder2]);
   });
 
-  it("soft-deletes a folder and queues a pending change", async () => {
-    await createFolder({ ...folder, currentRevision: 3 });
+  it("soft-deleting a folder writes deletedAt and queues a delete change", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    await db.folders.put(folder1);
+
     await deleteFolder("folder_1");
 
-    const stored = await db.folders.get("folder_1");
-    expect(stored?.deletedAt).not.toBeNull();
-
+    await expect(db.folders.get("folder_1")).resolves.toEqual({
+      ...folder1,
+      deletedAt: "2026-04-27T12:34:56.789Z",
+    });
     const changes = await db.pendingChanges.toArray();
-    const deleteChange = changes.find((change) => change.operation === "delete");
-    expect(deleteChange).toMatchObject({
+    expect(changes).toHaveLength(1);
+    const [change] = changes;
+    expect(change).toMatchObject({
       entityType: "folder",
       entityId: "folder_1",
       operation: "delete",
-      baseRevision: 3,
+      baseRevision: 5,
     });
+  });
+
+  it("soft-deleting a folder queues changed child note deletes before the folder delete", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    await db.folders.bulkPut([folder1, folder2]);
+    await db.notes.bulkPut([noteInFolder1, secondNoteInFolder1, noteInFolder2]);
+
+    await deleteFolder("folder_1");
+
+    await expect(db.notes.get("note_1")).resolves.toEqual({
+      ...noteInFolder1,
+      deletedAt: "2026-04-27T12:34:56.789Z",
+    });
+    await expect(db.notes.get("note_2")).resolves.toEqual({
+      ...secondNoteInFolder1,
+      deletedAt: "2026-04-27T12:34:56.789Z",
+    });
+    await expect(db.notes.get("note_3")).resolves.toEqual(noteInFolder2);
+    const changes = await db.pendingChanges.orderBy("queuedOrder").toArray();
+    expect(changes).toMatchObject([
+      {
+        entityType: "note",
+        entityId: "note_1",
+        operation: "delete",
+        baseRevision: 3,
+      },
+      {
+        entityType: "note",
+        entityId: "note_2",
+        operation: "delete",
+        baseRevision: 4,
+      },
+      {
+        entityType: "folder",
+        entityId: "folder_1",
+        operation: "delete",
+        baseRevision: 5,
+      },
+    ]);
+  });
+
+  it("sends changed child note deletes before the folder delete", async () => {
+    const folder: FolderRecord = {
+      id: "folder_push_delete",
+      name: "Inbox",
+      sortOrder: 1,
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const changedChild: NoteRecord = {
+      id: "note_changed",
+      folderId: folder.id,
+      title: "Changed child",
+      bodyMd: "Changed child",
+      bodyPlain: "Changed child",
+      currentRevision: 2,
+      updatedAt: "2026-04-21T09:05:00.000Z",
+      deletedAt: null,
+    };
+    const unchangedChild: NoteRecord = {
+      id: "note_unchanged",
+      folderId: folder.id,
+      title: "Unchanged child",
+      bodyMd: "Unchanged child",
+      bodyPlain: "Unchanged child",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:06:00.000Z",
+      deletedAt: null,
+    };
+    const alreadyDeletedChild: NoteRecord = {
+      id: "note_deleted",
+      folderId: folder.id,
+      title: "Deleted child",
+      bodyMd: "Deleted child",
+      bodyPlain: "Deleted child",
+      currentRevision: 3,
+      updatedAt: "2026-04-21T09:07:00.000Z",
+      deletedAt: "2026-04-21T09:08:00.000Z",
+    };
+    await db.folders.put(folder);
+    await db.notes.bulkPut([changedChild, unchangedChild, alreadyDeletedChild]);
+
+    await deleteFolder(folder.id);
+
+    const pending = await db.pendingChanges.orderBy("queuedOrder").toArray();
+    expect(pending).toMatchObject([
+      {
+        entityType: "note",
+        entityId: changedChild.id,
+        operation: "delete",
+        baseRevision: 2,
+      },
+      {
+        entityType: "folder",
+        entityId: folder.id,
+        operation: "delete",
+        baseRevision: 1,
+      },
+    ]);
+
+    const pushedChanges: Parameters<Parameters<typeof pushChanges>[1]["syncPush"]>[0]["changes"][] = [];
+    const result = await pushChanges(
+      db,
+      {
+        async syncPush(input) {
+          pushedChanges.push(input.changes);
+          return {
+            accepted: [
+              { acceptedRevision: 3, cursor: 1 },
+              { acceptedRevision: 2, cursor: 2 },
+            ],
+            conflicts: [],
+          };
+        },
+        async syncPull() {
+          throw new Error("syncPull should not be called");
+        },
+      },
+      "device_1",
+    );
+
+    expect(result.conflicts).toEqual([]);
+    expect(pushedChanges).toEqual([
+      [
+        {
+          clientChangeId: expect.any(String),
+          entityType: "note",
+          entityId: changedChild.id,
+          operation: "delete",
+          baseRevision: 2,
+          payload: null,
+        },
+        {
+          clientChangeId: expect.any(String),
+          entityType: "folder",
+          entityId: folder.id,
+          operation: "delete",
+          baseRevision: 1,
+          payload: null,
+        },
+      ],
+    ]);
+  });
+
+  it("coalesces a local-only folder and child note create when the folder is deleted before sync", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    const folder: FolderRecord = {
+      id: "folder_local_only",
+      name: "Draft folder",
+      sortOrder: 2,
+      currentRevision: 0,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const childNote: NoteRecord = {
+      id: "note_local_only",
+      folderId: folder.id,
+      title: "Draft child",
+      bodyMd: "Draft child",
+      bodyPlain: "Draft child",
+      currentRevision: 0,
+      updatedAt: "2026-04-21T09:05:00.000Z",
+      deletedAt: null,
+    };
+
+    await createFolder(folder);
+    await createNote(childNote);
+    await deleteFolder(folder.id);
+
+    await expect(db.folders.get(folder.id)).resolves.toEqual({
+      ...folder,
+      deletedAt: "2026-04-27T12:34:56.789Z",
+    });
+    await expect(db.notes.get(childNote.id)).resolves.toEqual({
+      ...childNote,
+      deletedAt: "2026-04-27T12:34:56.789Z",
+    });
+    await expect(db.pendingChanges.toArray()).resolves.toEqual([]);
+
+    let syncPushCalled = false;
+    await pushChanges(
+      db,
+      {
+        async syncPush() {
+          syncPushCalled = true;
+          return { accepted: [], conflicts: [] };
+        },
+        async syncPull() {
+          throw new Error("syncPull should not be called");
+        },
+      },
+      "device_1",
+    );
+
+    expect(syncPushCalled).toBe(false);
+  });
+
+  it("rolls back folder deletion when queueing the pending change fails", async () => {
+    await db.folders.put(folder1);
+    db.pendingChanges.hook("creating", () => {
+      throw new Error("pending change failed");
+    });
+
+    await expect(deleteFolder("folder_1")).rejects.toThrow("pending change failed");
+
+    await expect(db.folders.get("folder_1")).resolves.toEqual(folder1);
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(0);
+  });
+
+  it("rolls back child note soft-deletes when queueing a pending delete change fails", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    await db.folders.put(folder1);
+    await db.notes.bulkPut([noteInFolder1, secondNoteInFolder1]);
+    const childNoteUpdates: unknown[] = [];
+    db.notes.hook("updating", (changes, _key, note) => {
+      if (note.folderId === "folder_1") {
+        childNoteUpdates.push(changes);
+      }
+    });
+    db.pendingChanges.hook("creating", () => {
+      throw new Error("pending change failed");
+    });
+
+    await expect(deleteFolder("folder_1")).rejects.toThrow("pending change failed");
+
+    expect(childNoteUpdates).toEqual([
+      { deletedAt: "2026-04-27T12:34:56.789Z" },
+    ]);
+    await expect(db.folders.get("folder_1")).resolves.toEqual(folder1);
+    await expect(db.notes.get("note_1")).resolves.toEqual(noteInFolder1);
+    await expect(db.notes.get("note_2")).resolves.toEqual(secondNoteInFolder1);
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(0);
+  });
+
+  it("deleting a missing folder does nothing and queues no change", async () => {
+    await deleteFolder("missing");
+
+    await expect(db.folders.toArray()).resolves.toEqual([]);
+    await expect(db.pendingChanges.toArray()).resolves.toEqual([]);
   });
 });

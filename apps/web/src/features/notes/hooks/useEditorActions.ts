@@ -1,34 +1,65 @@
-import { useCallback } from "react";
-import { markdownToPlainText } from "@markean/domain";
+import { markdownToPlainText, type NoteRecord } from "@markean/domain";
 import { getScheduler } from "../../../app/bootstrap";
-import { updateNote as persistUpdateNote } from "../persistence/notes.persistence";
+import { updateNote as persistNoteUpdate } from "../persistence/notes.persistence";
 import { useNotesStore } from "../store/notes.store";
 import { useSyncStore } from "../store/sync.store";
 
-export function useEditorActions() {
+type EditorActions = {
+  changeBody: (noteId: string, bodyMd: string) => Promise<void>;
+};
+
+function deriveTitleFromBody(bodyMd: string): string {
+  return (
+    bodyMd
+      .split(/\n+/)
+      .map((line) => line.replace(/^#+\s*/, "").trim())
+      .find(Boolean) ?? ""
+  );
+}
+
+function restoreIfOptimisticWriteUnchanged(
+  noteId: string,
+  previousNote: NoteRecord,
+  optimisticNote: NoteRecord,
+): void {
+  useNotesStore.setState((state) => ({
+    notes: state.notes.map((note) =>
+      note.id === noteId && note === optimisticNote ? previousNote : note,
+    ),
+  }));
+}
+
+export function useEditorActions(): EditorActions {
   const updateNote = useNotesStore((state) => state.updateNote);
 
-  const changeBody = useCallback(
-    (noteId: string, bodyMd: string) => {
-      const title =
-        bodyMd
-          .split(/\n+/)
-          .map((line) => line.replace(/^#+\s*/, "").trim())
-          .find(Boolean) ?? "";
+  return {
+    async changeBody(noteId, bodyMd) {
+      const existing = useNotesStore.getState().notes.find((note) => note.id === noteId);
+      if (!existing) return;
+
+      const previousNote = { ...existing };
+      const title = deriveTitleFromBody(bodyMd);
+      const bodyPlain = markdownToPlainText(bodyMd);
 
       updateNote(noteId, { bodyMd, title });
+      const optimisticNote = useNotesStore.getState().notes.find((note) => note.id === noteId);
+      if (!optimisticNote) return;
+
+      let persisted = false;
+      try {
+        persisted = await persistNoteUpdate(noteId, { bodyMd, bodyPlain, title });
+      } catch (error) {
+        restoreIfOptimisticWriteUnchanged(noteId, previousNote, optimisticNote);
+        throw error;
+      }
+
+      if (!persisted) {
+        restoreIfOptimisticWriteUnchanged(noteId, previousNote, optimisticNote);
+        return;
+      }
+
       useSyncStore.getState().markUnsynced();
-
-      void persistUpdateNote(noteId, {
-        bodyMd,
-        bodyPlain: markdownToPlainText(bodyMd),
-        title,
-      });
-
       getScheduler()?.requestSync();
     },
-    [updateNote],
-  );
-
-  return { changeBody };
+  };
 }

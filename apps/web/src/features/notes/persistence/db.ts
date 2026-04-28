@@ -1,15 +1,16 @@
 import type { MarkeanWebDatabase } from "@markean/storage-web";
 
-let dbInstance: MarkeanWebDatabase | null = null;
+let _db: MarkeanWebDatabase | null = null;
 
 export function initDb(db: MarkeanWebDatabase): void {
-  dbInstance = db;
+  _db = db;
+}
+
+export function resetDbForTests(): void {
+  _db = null;
 }
 
 export function getDb(): MarkeanWebDatabase {
-  if (!dbInstance) {
-    throw new Error("Database not initialized. Call initDb() first.");
-  }
-
-  return dbInstance;
+  if (!_db) throw new Error("Database not initialized. Call initDb() first.");
+  return _db;
 }

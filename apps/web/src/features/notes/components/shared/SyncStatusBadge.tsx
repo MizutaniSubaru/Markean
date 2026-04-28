@@ -3,9 +3,8 @@ import { useSyncStore } from "../../store/sync.store";
 import { SyncIcon } from "./Icons";
 
 export function SyncStatusBadge() {
-  const status = useSyncStore((state) => state.status);
   const { t } = useI18n();
-
+  const status = useSyncStore((state) => state.status);
   const label =
     status === "syncing"
       ? t("editor.syncing")
