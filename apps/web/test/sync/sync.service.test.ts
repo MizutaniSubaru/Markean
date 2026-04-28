@@ -6,6 +6,7 @@ import { createWebDatabase, type MarkeanWebDatabase } from "@markean/storage-web
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initDb, resetDbForTests } from "../../src/features/notes/persistence/db";
 import { createSyncService } from "../../src/features/notes/sync/sync.service";
+import { useEditorStore } from "../../src/features/notes/store/editor.store";
 import { useFoldersStore } from "../../src/features/notes/store/folders.store";
 import { useNotesStore } from "../../src/features/notes/store/notes.store";
 import { useSyncStore } from "../../src/features/notes/store/sync.store";
@@ -75,6 +76,13 @@ function createDeferred<T>() {
 function resetStores(): void {
   useNotesStore.setState({ notes: [] });
   useFoldersStore.setState({ folders: [] });
+  useEditorStore.setState({
+    activeFolderId: "",
+    activeNoteId: "",
+    searchQuery: "",
+    mobileView: "folders",
+    newNoteId: null,
+  });
   useSyncStore.setState({
     status: "idle",
     isOnline: true,
@@ -177,6 +185,120 @@ describe("sync.service", () => {
     await service.executeSyncCycle();
 
     expect(useFoldersStore.getState().folders).toEqual([pulledFolder]);
+  });
+
+  it("revalidates editor selection when sync pull deletes the selected note", async () => {
+    const selectedNote: NoteRecord = {
+      ...localNote,
+      id: "a-selected-note",
+      title: "Selected note",
+    };
+    const remainingNote: NoteRecord = {
+      ...localNote,
+      id: "b-remaining-note",
+      title: "Remaining note",
+      updatedAt: "2026-04-22T10:00:00.000Z",
+    };
+    await db.folders.put(localFolder);
+    await db.notes.bulkPut([selectedNote, remainingNote]);
+    useEditorStore.setState({
+      activeFolderId: localFolder.id,
+      activeNoteId: selectedNote.id,
+    });
+    const apiClient = createMockApiClient();
+    apiClient.syncPull.mockResolvedValue({
+      nextCursor: 2,
+      events: [
+        {
+          cursor: 2,
+          entityType: "note",
+          entityId: selectedNote.id,
+          operation: "delete",
+          revisionNumber: selectedNote.currentRevision + 1,
+          sourceDeviceId: "server_device",
+        },
+      ],
+    });
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: localFolder.id,
+      activeNoteId: remainingNote.id,
+    });
+  });
+
+  it("revalidates editor selection when sync pull deletes the selected folder", async () => {
+    const selectedFolder: FolderRecord = {
+      ...localFolder,
+      id: "a-selected-folder",
+      name: "Selected",
+    };
+    const remainingFolder: FolderRecord = {
+      ...pulledFolder,
+      id: "b-remaining-folder",
+      name: "Remaining",
+    };
+    const selectedNote: NoteRecord = {
+      ...localNote,
+      id: "a-selected-note",
+      folderId: selectedFolder.id,
+      title: "Selected note",
+    };
+    const remainingNote: NoteRecord = {
+      ...pulledNote,
+      id: "b-remaining-note",
+      folderId: remainingFolder.id,
+      title: "Remaining note",
+    };
+    await db.folders.bulkPut([selectedFolder, remainingFolder]);
+    await db.notes.bulkPut([selectedNote, remainingNote]);
+    useEditorStore.setState({
+      activeFolderId: selectedFolder.id,
+      activeNoteId: selectedNote.id,
+    });
+    const apiClient = createMockApiClient();
+    apiClient.syncPull.mockResolvedValue({
+      nextCursor: 2,
+      events: [
+        {
+          cursor: 2,
+          entityType: "folder",
+          entityId: selectedFolder.id,
+          operation: "delete",
+          revisionNumber: selectedFolder.currentRevision + 1,
+          sourceDeviceId: "server_device",
+        },
+      ],
+    });
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: remainingFolder.id,
+      activeNoteId: remainingNote.id,
+    });
+  });
+
+  it("preserves valid editor selection after sync pull", async () => {
+    await db.folders.bulkPut([localFolder, pulledFolder]);
+    await db.notes.bulkPut([localNote, pulledNote]);
+    useEditorStore.setState({
+      activeFolderId: pulledFolder.id,
+      activeNoteId: pulledNote.id,
+    });
+    const apiClient = createMockApiClient();
+    apiClient.syncPull.mockResolvedValue({ nextCursor: 2, events: [] });
+    const service = createSyncService(apiClient);
+
+    await service.executeSyncCycle();
+
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: pulledFolder.id,
+      activeNoteId: pulledNote.id,
+    });
   });
 
   it("skips stale store and status updates when sync becomes inactive before pull resolves", async () => {
