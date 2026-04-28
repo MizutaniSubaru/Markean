@@ -28,6 +28,7 @@ export const syncRoutes = new Hono<AuthEnv>()
     }> = [];
     let hasMissingUpdateTarget = false;
     const sameBatchCreatedEntities = new Set<string>();
+    const sameBatchHandledNoteIds = new Set<string>();
 
     for (const change of body.changes) {
       const entityKey = getEntityKey(change.entityType, change.entityId);
@@ -98,13 +99,17 @@ export const syncRoutes = new Hono<AuthEnv>()
              WHERE user_id = ?
                AND folder_id = ?
                AND deleted_at IS NULL
-               AND current_revision > ?
              ORDER BY id ASC`,
           )
-          .bind(userId, change.entityId, change.baseRevision)
+          .bind(userId, change.entityId)
           .all<{ id: string; currentRevision: number }>();
 
         for (const childNote of childNoteConflicts.results ?? []) {
+          // Folder deletes have no per-child base revision; require explicit batch handling for post-create child state.
+          if (childNote.currentRevision === 1 || sameBatchHandledNoteIds.has(childNote.id)) {
+            continue;
+          }
+
           conflicts.push({
             entityType: "note",
             entityId: childNote.id,
@@ -119,6 +124,15 @@ export const syncRoutes = new Hono<AuthEnv>()
         !wasCreatedEarlierInBatch
       ) {
         hasMissingUpdateTarget = true;
+      }
+
+      if (
+        change.entityType === "note" &&
+        (change.operation === "update" || change.operation === "delete") &&
+        currentEntity &&
+        currentEntity.deletedAt === null
+      ) {
+        sameBatchHandledNoteIds.add(change.entityId);
       }
     }
 

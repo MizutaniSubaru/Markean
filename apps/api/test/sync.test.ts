@@ -728,6 +728,267 @@ describe("sync routes", () => {
     expect(eventCount?.count).toBe(0);
   });
 
+  it("accepts folder delete after a same-batch child note delete at the current revision", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    await baseEnv.DB.batch([
+      baseEnv.DB.prepare(
+        `INSERT INTO folders (
+          id, user_id, name, sort_order, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("folder_1", "user_dev", "Inbox", 1, 1, now, now),
+      baseEnv.DB.prepare(
+        `INSERT INTO notes (
+          id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("note_1", "user_dev", "folder_1", "Server Title", "Server Body", "Server Body", 2, now, now),
+      baseEnv.DB.prepare(
+        `INSERT INTO notes (
+          id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("note_2", "user_dev", "folder_1", "Child", "Body", "Body", 1, now, now),
+    ]);
+
+    const response = await pushSync(
+      {
+        deviceId: "web_1",
+        changes: [
+          {
+            clientChangeId: "chg_note_delete_before_folder_delete",
+            entityType: "note",
+            entityId: "note_1",
+            operation: "delete",
+            baseRevision: 2,
+            payload: null,
+          },
+          {
+            clientChangeId: "chg_folder_delete_after_child",
+            entityType: "folder",
+            entityId: "folder_1",
+            operation: "delete",
+            baseRevision: 1,
+            payload: null,
+          },
+        ],
+      },
+      cookie,
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      accepted: Array<{ acceptedRevision: number; cursor: number }>;
+      cursor: number;
+    };
+
+    expect(body.accepted.map((accepted) => accepted.acceptedRevision)).toEqual([3, 2]);
+    expect(body.cursor).toBe(body.accepted[1]?.cursor);
+    expect(body.accepted[0]?.cursor).toBeLessThan(body.accepted[1]?.cursor ?? 0);
+
+    const events = await baseEnv.DB.prepare(
+      `SELECT
+         entity_type AS entityType,
+         entity_id AS entityId,
+         operation,
+         revision_number AS revisionNumber,
+         client_change_id AS clientChangeId
+       FROM sync_events
+       WHERE user_id = ?
+       ORDER BY cursor ASC`,
+    )
+      .bind("user_dev")
+      .all<{
+        entityType: string;
+        entityId: string;
+        operation: string;
+        revisionNumber: number;
+        clientChangeId: string;
+      }>();
+
+    expect(events.results).toEqual([
+      {
+        entityType: "note",
+        entityId: "note_1",
+        operation: "delete",
+        revisionNumber: 3,
+        clientChangeId: "chg_note_delete_before_folder_delete",
+      },
+      {
+        entityType: "folder",
+        entityId: "folder_1",
+        operation: "delete",
+        revisionNumber: 2,
+        clientChangeId: "chg_folder_delete_after_child",
+      },
+      {
+        entityType: "note",
+        entityId: "note_2",
+        operation: "delete",
+        revisionNumber: 2,
+        clientChangeId: "cascade_folder_1_note_2",
+      },
+    ]);
+
+    const folder = await baseEnv.DB.prepare(
+      `SELECT deleted_at AS deletedAt, current_revision AS currentRevision
+       FROM folders
+       WHERE id = ? AND user_id = ?`,
+    )
+      .bind("folder_1", "user_dev")
+      .first<{ deletedAt: string | null; currentRevision: number }>();
+
+    expect(folder).toEqual({
+      deletedAt: expect.any(String),
+      currentRevision: 2,
+    });
+
+    const notes = await baseEnv.DB.prepare(
+      `SELECT id, deleted_at AS deletedAt, current_revision AS currentRevision
+       FROM notes
+       WHERE user_id = ?
+       ORDER BY id ASC`,
+    )
+      .bind("user_dev")
+      .all<{ id: string; deletedAt: string | null; currentRevision: number }>();
+
+    expect(notes.results).toEqual([
+      {
+        id: "note_1",
+        deletedAt: expect.any(String),
+        currentRevision: 3,
+      },
+      {
+        id: "note_2",
+        deletedAt: expect.any(String),
+        currentRevision: 2,
+      },
+    ]);
+  });
+
+  it("accepts folder delete after a same-batch child note update at the current revision", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    await baseEnv.DB.batch([
+      baseEnv.DB.prepare(
+        `INSERT INTO folders (
+          id, user_id, name, sort_order, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("folder_1", "user_dev", "Inbox", 1, 1, now, now),
+      baseEnv.DB.prepare(
+        `INSERT INTO notes (
+          id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("note_1", "user_dev", "folder_1", "Server Title", "Server Body", "Server Body", 2, now, now),
+    ]);
+
+    const response = await pushSync(
+      {
+        deviceId: "web_1",
+        changes: [
+          {
+            clientChangeId: "chg_note_update_before_folder_delete",
+            entityType: "note",
+            entityId: "note_1",
+            operation: "update",
+            baseRevision: 2,
+            payload: {
+              folderId: "folder_1",
+              title: "Client Title",
+              bodyMd: "Client Body",
+            },
+          },
+          {
+            clientChangeId: "chg_folder_delete_after_child_update",
+            entityType: "folder",
+            entityId: "folder_1",
+            operation: "delete",
+            baseRevision: 1,
+            payload: null,
+          },
+        ],
+      },
+      cookie,
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      accepted: Array<{ acceptedRevision: number; cursor: number }>;
+      cursor: number;
+    };
+
+    expect(body.accepted.map((accepted) => accepted.acceptedRevision)).toEqual([3, 2]);
+    expect(body.cursor).toBe(body.accepted[1]?.cursor);
+    expect(body.accepted[0]?.cursor).toBeLessThan(body.accepted[1]?.cursor ?? 0);
+
+    const events = await baseEnv.DB.prepare(
+      `SELECT
+         entity_type AS entityType,
+         entity_id AS entityId,
+         operation,
+         revision_number AS revisionNumber,
+         client_change_id AS clientChangeId
+       FROM sync_events
+       WHERE user_id = ?
+       ORDER BY cursor ASC`,
+    )
+      .bind("user_dev")
+      .all<{
+        entityType: string;
+        entityId: string;
+        operation: string;
+        revisionNumber: number;
+        clientChangeId: string;
+      }>();
+
+    expect(events.results).toEqual([
+      {
+        entityType: "note",
+        entityId: "note_1",
+        operation: "update",
+        revisionNumber: 3,
+        clientChangeId: "chg_note_update_before_folder_delete",
+      },
+      {
+        entityType: "folder",
+        entityId: "folder_1",
+        operation: "delete",
+        revisionNumber: 2,
+        clientChangeId: "chg_folder_delete_after_child_update",
+      },
+      {
+        entityType: "note",
+        entityId: "note_1",
+        operation: "delete",
+        revisionNumber: 4,
+        clientChangeId: "cascade_folder_1_note_1",
+      },
+    ]);
+
+    const note = await baseEnv.DB.prepare(
+      `SELECT
+         title,
+         body_md AS bodyMd,
+         body_plain AS bodyPlain,
+         deleted_at AS deletedAt,
+         current_revision AS currentRevision
+       FROM notes
+       WHERE id = ? AND user_id = ?`,
+    )
+      .bind("note_1", "user_dev")
+      .first<{
+        title: string;
+        bodyMd: string;
+        bodyPlain: string;
+        deletedAt: string | null;
+        currentRevision: number;
+      }>();
+
+    expect(note).toEqual({
+      title: "Client Title",
+      bodyMd: "Client Body",
+      bodyPlain: "Client Body",
+      deletedAt: expect.any(String),
+      currentRevision: 4,
+    });
+  });
+
   it("soft-deletes a note via sync push", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     await baseEnv.DB.batch([
