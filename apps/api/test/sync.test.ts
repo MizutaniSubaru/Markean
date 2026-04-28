@@ -800,6 +800,82 @@ describe("sync routes", () => {
     expect(eventCount?.count).toBe(0);
   });
 
+  it("rejects repeated same-entity note deletes with a stale intra-batch base revision without mutation", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    await baseEnv.DB.batch([
+      baseEnv.DB.prepare(
+        `INSERT INTO folders (
+          id, user_id, name, sort_order, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("folder_1", "user_dev", "Inbox", 1, 1, now, now),
+      baseEnv.DB.prepare(
+        `INSERT INTO notes (
+          id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("note_1", "user_dev", "folder_1", "Active", "Body", "Body", 1, now, now),
+    ]);
+
+    const response = await pushSync(
+      {
+        deviceId: "web_1",
+        changes: [
+          {
+            clientChangeId: "chg_note_delete_first",
+            entityType: "note",
+            entityId: "note_1",
+            operation: "delete",
+            baseRevision: 1,
+            payload: null,
+          },
+          {
+            clientChangeId: "chg_note_delete_second_stale",
+            entityType: "note",
+            entityId: "note_1",
+            operation: "delete",
+            baseRevision: 1,
+            payload: null,
+          },
+        ],
+      },
+      cookie,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      accepted: [],
+      conflicts: [
+        {
+          entityType: "note",
+          entityId: "note_1",
+          serverRevision: 2,
+        },
+      ],
+    });
+
+    const note = await baseEnv.DB.prepare(
+      `SELECT deleted_at AS deletedAt, current_revision AS currentRevision
+       FROM notes
+       WHERE id = ? AND user_id = ?`,
+    )
+      .bind("note_1", "user_dev")
+      .first<{ deletedAt: string | null; currentRevision: number }>();
+
+    expect(note).toEqual({
+      deletedAt: null,
+      currentRevision: 1,
+    });
+
+    const eventCount = await baseEnv.DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM sync_events
+       WHERE user_id = ? AND client_change_id IN (?, ?)`,
+    )
+      .bind("user_dev", "chg_note_delete_first", "chg_note_delete_second_stale")
+      .first<{ count: number }>();
+
+    expect(eventCount?.count).toBe(0);
+  });
+
   it("detects conflicts on stale folder delete without cascading notes", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     await baseEnv.DB.batch([
@@ -877,6 +953,100 @@ describe("sync routes", () => {
          AND entity_id IN (?, ?)`,
     )
       .bind("user_dev", "folder_1", "note_1")
+      .first<{ count: number }>();
+
+    expect(eventCount?.count).toBe(0);
+  });
+
+  it("rejects repeated same-entity folder deletes with a stale intra-batch base revision without mutation", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    await baseEnv.DB.batch([
+      baseEnv.DB.prepare(
+        `INSERT INTO folders (
+          id, user_id, name, sort_order, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("folder_1", "user_dev", "Inbox", 1, 1, now, now),
+      baseEnv.DB.prepare(
+        `INSERT INTO notes (
+          id, user_id, folder_id, title, body_md, body_plain, current_revision, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind("note_1", "user_dev", "folder_1", "Child", "Body", "Body", 1, now, now),
+    ]);
+
+    const response = await pushSync(
+      {
+        deviceId: "web_1",
+        changes: [
+          {
+            clientChangeId: "chg_folder_delete_first",
+            entityType: "folder",
+            entityId: "folder_1",
+            operation: "delete",
+            baseRevision: 1,
+            payload: null,
+          },
+          {
+            clientChangeId: "chg_folder_delete_second_stale",
+            entityType: "folder",
+            entityId: "folder_1",
+            operation: "delete",
+            baseRevision: 1,
+            payload: null,
+          },
+        ],
+      },
+      cookie,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      accepted: [],
+      conflicts: [
+        {
+          entityType: "folder",
+          entityId: "folder_1",
+          serverRevision: 2,
+        },
+      ],
+    });
+
+    const folder = await baseEnv.DB.prepare(
+      `SELECT deleted_at AS deletedAt, current_revision AS currentRevision
+       FROM folders
+       WHERE id = ? AND user_id = ?`,
+    )
+      .bind("folder_1", "user_dev")
+      .first<{ deletedAt: string | null; currentRevision: number }>();
+
+    expect(folder).toEqual({
+      deletedAt: null,
+      currentRevision: 1,
+    });
+
+    const note = await baseEnv.DB.prepare(
+      `SELECT deleted_at AS deletedAt, current_revision AS currentRevision
+       FROM notes
+       WHERE id = ? AND user_id = ?`,
+    )
+      .bind("note_1", "user_dev")
+      .first<{ deletedAt: string | null; currentRevision: number }>();
+
+    expect(note).toEqual({
+      deletedAt: null,
+      currentRevision: 1,
+    });
+
+    const eventCount = await baseEnv.DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM sync_events
+       WHERE user_id = ? AND client_change_id IN (?, ?, ?)`,
+    )
+      .bind(
+        "user_dev",
+        "chg_folder_delete_first",
+        "chg_folder_delete_second_stale",
+        "cascade_folder_1_note_1",
+      )
       .first<{ count: number }>();
 
     expect(eventCount?.count).toBe(0);

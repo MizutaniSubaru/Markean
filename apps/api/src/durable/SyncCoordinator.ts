@@ -232,6 +232,7 @@ export class SyncCoordinator extends DurableObject<Env> {
     const sameBatchHandledNoteIds = new Set<string>();
     const sameBatchDeletedFolderIds = new Set<string>();
     const sameBatchCreatedEntities = new Set<string>();
+    const sameBatchDeletedEntities = new Set<string>();
     const seenClientChangeIds = new Set<string>();
 
     for (const change of changes) {
@@ -322,6 +323,19 @@ export class SyncCoordinator extends DurableObject<Env> {
 
       if (change.operation === "update" || change.operation === "delete") {
         const wasCreatedEarlierInBatch = sameBatchCreatedEntities.has(entityKey);
+
+        if (
+          currentEntity &&
+          currentEntity.deletedAt !== null &&
+          sameBatchDeletedEntities.has(entityKey)
+        ) {
+          conflicts.push({
+            entityType: change.entityType,
+            entityId: change.entityId,
+            serverRevision: currentEntity.currentRevision,
+          });
+          continue;
+        }
 
         if (!currentEntity || currentEntity.deletedAt !== null) {
           if (change.operation === "update" && !wasCreatedEarlierInBatch) {
@@ -423,6 +437,9 @@ export class SyncCoordinator extends DurableObject<Env> {
               ? (change.payload as NotePayload).folderId
               : currentEntity.folderId,
         });
+        if (change.operation === "delete") {
+          sameBatchDeletedEntities.add(entityKey);
+        }
         continue;
       }
 
@@ -433,6 +450,7 @@ export class SyncCoordinator extends DurableObject<Env> {
       });
 
       if (change.operation === "delete") {
+        sameBatchDeletedEntities.add(entityKey);
         sameBatchDeletedFolderIds.add(change.entityId);
       }
     }
