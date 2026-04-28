@@ -3,6 +3,11 @@
   "private": true,
   "packageManager": "pnpm@10.30.3",
   "scripts": {
+    "build:web": "pnpm --filter @markean/web build",
+    "deploy": "pnpm run build:web && pnpm --filter @markean/api exec wrangler deploy",
+    "deploy:dry-run": "pnpm run build:web && pnpm --filter @markean/api exec wrangler deploy --dry-run --outdir ../../.wrangler-dry-run",
+    "d1:migrate:local": "pnpm --filter @markean/api exec wrangler d1 migrations apply markean-api-dev --local",
+    "d1:migrate:remote": "pnpm --filter @markean/api exec wrangler d1 migrations apply markean-api-prod --remote",
     "typecheck": "pnpm -r typecheck",
     "test": "vitest run",
     "test:e2e": "playwright test",

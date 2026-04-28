@@ -3,6 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import type { FolderRecord, NoteRecord } from "@markean/domain";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/app/App";
+import { useAuthStore } from "../src/features/auth/store/auth.store";
 import { useEditorStore } from "../src/features/notes/store/editor.store";
 import { useFoldersStore } from "../src/features/notes/store/folders.store";
 import { useNotesStore } from "../src/features/notes/store/notes.store";
@@ -94,6 +95,7 @@ function mockMatchMedia(matches: boolean): void {
 }
 
 function resetStores(): void {
+  useAuthStore.getState().resetAuth();
   useFoldersStore.setState({ folders: [] });
   useNotesStore.setState({ notes: [] });
   useEditorStore.setState({
@@ -163,6 +165,16 @@ describe("App", () => {
     expect(screen.getByText("1 notes")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /welcome to markean/i })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Editor" })).toHaveValue(seededNote.bodyMd);
+  });
+
+  it("renders the sign-in screen when the remote session is unauthenticated", () => {
+    seedWorkspace();
+    useAuthStore.getState().markUnauthenticated();
+
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: "Sign in to Markean" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Folders" })).not.toBeInTheDocument();
   });
 
   it("renders the mobile folders view from the folder store", () => {

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { FolderRecord, NoteRecord } from "@markean/domain";
+import { SignInScreen } from "../features/auth/components/SignInScreen";
+import { useAuthStore } from "../features/auth/store/auth.store";
 import { Editor } from "../features/notes/components/desktop/Editor";
 import { NoteList } from "../features/notes/components/desktop/NoteList";
 import { Sidebar } from "../features/notes/components/desktop/Sidebar";
@@ -79,6 +81,7 @@ function AppShell() {
   const isMobile = useMediaQuery("(max-width: 767px)");
   const notes = useNotesStore((state) => state.notes);
   const folders = useFoldersStore((state) => state.folders);
+  const authStatus = useAuthStore((state) => state.status);
   const addNote = useNotesStore((state) => state.addNote);
   const addFolder = useFoldersStore((state) => state.addFolder);
   const activeFolderId = useEditorStore((state) => state.activeFolderId);
@@ -107,6 +110,14 @@ function AppShell() {
     const timeoutId = window.setTimeout(() => setNewNoteId(null), 1600);
     return () => window.clearTimeout(timeoutId);
   }, [newNoteId, setNewNoteId]);
+
+  if (authStatus === "unauthenticated") {
+    return (
+      <I18nProvider value={i18n}>
+        <SignInScreen />
+      </I18nProvider>
+    );
+  }
 
   const activeNotes = notes.filter(isActiveNote);
   const activeFolders = folders.filter(isActiveFolder);

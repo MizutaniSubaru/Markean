@@ -51,6 +51,45 @@ export type TrashResponse = Array<{
   deletedAt: string;
 }>;
 
+export type AuthProvider = "google" | "apple";
+
+export type MagicLinkRequest = {
+  email: string;
+  redirectTarget?: string;
+};
+
+export class ApiClientHttpError extends Error {
+  status: number;
+  body: unknown;
+
+  constructor(status: number, body: unknown) {
+    super(`API request failed with status ${status}`);
+    this.name = "ApiClientHttpError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+async function parseJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+async function parseJsonOrThrow<T>(response: Response): Promise<T> {
+  const body = await parseJson(response);
+  const responseLike = response as Response & { ok?: boolean; status?: number };
+  const ok = typeof responseLike.ok === "boolean" ? responseLike.ok : true;
+
+  if (!ok) {
+    throw new ApiClientHttpError(responseLike.status ?? 500, body);
+  }
+
+  return body as T;
+}
+
 export function createApiClient(baseUrl = "") {
   const prefix = baseUrl.replace(/\/$/, "");
 
@@ -59,7 +98,30 @@ export function createApiClient(baseUrl = "") {
       const response = await fetch(`${prefix}/api/bootstrap`, {
         credentials: "include",
       });
-      return response.json();
+      return parseJsonOrThrow<BootstrapResponse>(response);
+    },
+
+    authStartUrl(provider: AuthProvider, input: { redirectTarget?: string } = {}): string {
+      const params = new URLSearchParams({
+        clientType: "web",
+        redirectTarget: input.redirectTarget ?? "/",
+      });
+
+      return `${prefix}/api/auth/${provider}/start?${params.toString()}`;
+    },
+
+    async requestMagicLink(input: MagicLinkRequest): Promise<{ ok: true }> {
+      const response = await fetch(`${prefix}/api/auth/email/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          email: input.email,
+          clientType: "web",
+          redirectTarget: input.redirectTarget ?? "/",
+        }),
+      });
+      return parseJsonOrThrow<{ ok: true }>(response);
     },
 
     async syncPush(input: {

@@ -17,4 +17,13 @@ export const en: Record<string, string> = {
   "mobile.done": "Done",
   "mobile.folders": "Folders",
   "welcome.title": "Welcome to Markean",
+  "auth.title": "Sign in to Markean",
+  "auth.subtitle": "Sync notes across devices with a private Markean session.",
+  "auth.email": "Email",
+  "auth.sendMagicLink": "Send magic link",
+  "auth.sending": "Sending",
+  "auth.google": "Continue with Google",
+  "auth.apple": "Continue with Apple",
+  "auth.magicLinkSent": "Check your email for a sign-in link.",
+  "auth.magicLinkError": "Unable to send the sign-in link.",
 };

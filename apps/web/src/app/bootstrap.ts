@@ -1,4 +1,4 @@
-import { createApiClient } from "@markean/api-client";
+import { ApiClientHttpError, createApiClient } from "@markean/api-client";
 import { markdownToPlainText } from "@markean/domain";
 import type { FolderRecord, NoteRecord, PendingChange } from "@markean/domain";
 import { queueChange } from "@markean/sync-core";
@@ -7,6 +7,7 @@ import { getWelcomeNote } from "../features/notes/components/shared/WelcomeNote"
 import { getAllFolders } from "../features/notes/persistence/folders.persistence";
 import { getDb, initDb } from "../features/notes/persistence/db";
 import { getAllNotes } from "../features/notes/persistence/notes.persistence";
+import { useAuthStore } from "../features/auth/store/auth.store";
 import { createSyncScheduler } from "../features/notes/sync/sync.scheduler";
 import { createSyncService } from "../features/notes/sync/sync.service";
 import { useEditorStore } from "../features/notes/store/editor.store";
@@ -75,14 +76,30 @@ function assertShouldApplyBootstrap(options: BootstrapApplyOptions = {}): void {
   }
 }
 
+function isRemoteUser(value: unknown): value is { id: string; email?: string } {
+  if (!value || typeof value !== "object") return false;
+  const user = value as Record<string, unknown>;
+  return (
+    typeof user.id === "string" &&
+    isNonBlank(user.id) &&
+    (!("email" in user) || typeof user.email === "string")
+  );
+}
+
 function isValidBootstrapResponse(
   value: unknown,
-): value is { folders: FolderRecord[]; notes: NoteRecord[]; syncCursor: number } {
+): value is {
+  user?: { id: string; email?: string };
+  folders: FolderRecord[];
+  notes: NoteRecord[];
+  syncCursor: number;
+} {
   if (!value || typeof value !== "object") return false;
   const bootstrap = value as Record<string, unknown>;
   if (!Array.isArray(bootstrap.folders)) return false;
   if (!Array.isArray(bootstrap.notes)) return false;
   if (typeof bootstrap.syncCursor !== "number") return false;
+  if ("user" in bootstrap && !isRemoteUser(bootstrap.user)) return false;
   if (!isNonNegativeInteger(bootstrap.syncCursor)) return false;
   if (!bootstrap.folders.every(isRemoteFolderRecord)) return false;
   if (!bootstrap.notes.every(isRemoteNoteRecord)) return false;
@@ -660,6 +677,7 @@ export async function bootstrapApp(
   const db = createWebDatabase("markean");
   const apiClient = createApiClient(baseUrl);
   initDb(db);
+  useAuthStore.getState().resetAuth();
   const isStale = () => generation !== bootstrapGeneration;
 
   let migratedSelection: MigrationSelection | null = null;
@@ -721,6 +739,7 @@ export async function bootstrapApp(
     if (!isValidBootstrapResponse(bootstrap)) {
       throw new Error("Invalid bootstrap response");
     }
+    useAuthStore.getState().markAuthenticated(bootstrap.user?.email ?? null);
     const serverNotes = bootstrap.notes;
     const serverFolders = bootstrap.folders;
     const serverNoteIds = new Set(serverNotes.map((note) => note.id));
@@ -885,6 +904,9 @@ export async function bootstrapApp(
       localScheduler.stop();
       db.close();
       return;
+    }
+    if (!isStale() && error instanceof ApiClientHttpError && error.status === 401) {
+      useAuthStore.getState().markUnauthenticated();
     }
     // Local data is already loaded; remote bootstrap can recover on the scheduler.
   }

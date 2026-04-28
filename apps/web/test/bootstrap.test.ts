@@ -9,6 +9,7 @@ import {
   initDb,
   resetDbForTests,
 } from "../src/features/notes/persistence/db";
+import { useAuthStore } from "../src/features/auth/store/auth.store";
 import { useEditorStore } from "../src/features/notes/store/editor.store";
 import { useFoldersStore } from "../src/features/notes/store/folders.store";
 import { useNotesStore } from "../src/features/notes/store/notes.store";
@@ -44,6 +45,7 @@ function installStorageMock() {
 }
 
 function resetStores(): void {
+  useAuthStore.getState().resetAuth();
   useNotesStore.setState({ notes: [] });
   useFoldersStore.setState({ folders: [] });
   useEditorStore.setState({
@@ -57,6 +59,13 @@ function resetStores(): void {
     status: "idle",
     isOnline: true,
     lastSyncedAt: null,
+  });
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
   });
 }
 
@@ -3433,6 +3442,18 @@ describe("bootstrapApp", () => {
     await expect(db.syncState.get("syncCursor")).resolves.toEqual({
       key: "syncCursor",
       value: "2",
+    });
+  });
+
+  it("marks the remote auth state unauthenticated when bootstrap returns 401", async () => {
+    installStorageMock();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ error: "Unauthorized" }, 401)));
+
+    await bootstrapApp("https://example.test");
+
+    expect(useAuthStore.getState()).toMatchObject({
+      status: "unauthenticated",
+      userEmail: null,
     });
   });
 });

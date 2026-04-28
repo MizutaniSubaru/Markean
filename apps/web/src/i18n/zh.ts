@@ -17,4 +17,13 @@ export const zh: Record<string, string> = {
   "mobile.done": "完成",
   "mobile.folders": "文件夹",
   "welcome.title": "欢迎使用 Markean",
+  "auth.title": "登录 Markean",
+  "auth.subtitle": "使用 Markean 私有会话在多台设备间同步笔记。",
+  "auth.email": "邮箱",
+  "auth.sendMagicLink": "发送登录链接",
+  "auth.sending": "发送中",
+  "auth.google": "使用 Google 继续",
+  "auth.apple": "使用 Apple 继续",
+  "auth.magicLinkSent": "请查收邮件中的登录链接。",
+  "auth.magicLinkError": "无法发送登录链接。",
 };
