@@ -63,6 +63,8 @@ type CurrentEntityRow = {
   folderId: string | null;
 };
 
+type ProjectedEntities = Map<string, CurrentEntityRow | null>;
+
 type QueryRunner = Pick<D1Database, "prepare">;
 
 const toBodyPlain = (bodyMd: string) => bodyMd.replace(/\s+/g, " ").trim();
@@ -70,6 +72,7 @@ const getEntityKey = (
   entityType: SyncChangeInput["entityType"],
   entityId: string,
 ) => `${entityType}:${entityId}`;
+const SAME_BATCH_DELETED_AT = "__same_batch_deleted__";
 
 export class SyncConflictError extends Error {
   constructor(public readonly conflicts: SyncConflict[]) {
@@ -113,7 +116,7 @@ export class SyncCoordinator extends DurableObject<Env> {
       return {
         ok: true,
         accepted,
-        cursor: accepted.at(-1)?.cursor ?? 0,
+        cursor: Math.max(0, ...accepted.map((result) => result.cursor)),
       };
     } catch (error) {
       if (error instanceof SyncConflictError) {
@@ -147,16 +150,32 @@ export class SyncCoordinator extends DurableObject<Env> {
     const existing = this.getHandledChange(change.clientChangeId);
 
     if (existing) {
-      return {
+      const result = {
         acceptedRevision: existing.acceptedRevision,
         cursor: existing.cursor,
       };
+
+      if (change.entityType === "folder" && change.operation === "delete") {
+        return this.repairFolderDeleteCascade(session, change, result, new Date().toISOString());
+      }
+
+      return result;
     }
 
     const existingEvent = await this.findExistingEvent(session, change);
     if (existingEvent) {
-      this.rememberHandledChange(change.clientChangeId, existingEvent);
-      return existingEvent;
+      const result =
+        change.entityType === "folder" && change.operation === "delete"
+          ? await this.repairFolderDeleteCascade(
+              session,
+              change,
+              existingEvent,
+              new Date().toISOString(),
+            )
+          : existingEvent;
+
+      this.rememberHandledChange(change.clientChangeId, result);
+      return result;
     }
 
     const now = new Date().toISOString();
@@ -209,50 +228,83 @@ export class SyncCoordinator extends DurableObject<Env> {
   private async preflightChanges(db: QueryRunner, changes: SyncChangeInput[]) {
     const conflicts: SyncConflict[] = [];
     let hasMissingUpdateTarget = false;
-    const sameBatchCreatedEntities = new Set<string>();
+    const projectedEntities: ProjectedEntities = new Map();
     const sameBatchHandledNoteIds = new Set<string>();
     const sameBatchDeletedFolderIds = new Set<string>();
+    const sameBatchCreatedEntities = new Set<string>();
+    const seenClientChangeIds = new Set<string>();
 
     for (const change of changes) {
       const entityKey = getEntityKey(change.entityType, change.entityId);
+      const currentEntity = await this.getProjectedEntity(
+        db,
+        projectedEntities,
+        change.userId,
+        change.entityType,
+        change.entityId,
+      );
 
-      if (change.operation === "create") {
-        sameBatchCreatedEntities.add(entityKey);
+      if (seenClientChangeIds.has(change.clientChangeId)) {
+        conflicts.push({
+          entityType: change.entityType,
+          entityId: change.entityId,
+          serverRevision: currentEntity?.currentRevision ?? 0,
+        });
         continue;
       }
+      seenClientChangeIds.add(change.clientChangeId);
 
-      if (change.operation !== "update" && change.operation !== "delete") continue;
-
-      const currentEntity = await this.getCurrentEntity(db, change);
       const existingEvent = await this.findExistingEvent(db, change);
-
       if (existingEvent) {
         if (
           change.entityType === "note" &&
           (change.operation === "update" || change.operation === "delete") &&
           currentEntity &&
-          currentEntity.deletedAt === null &&
           currentEntity.currentRevision === existingEvent.acceptedRevision
         ) {
           sameBatchHandledNoteIds.add(change.entityId);
         }
 
+        if (
+          change.entityType === "folder" &&
+          change.operation === "delete" &&
+          currentEntity &&
+          currentEntity.deletedAt !== null &&
+          currentEntity.currentRevision === existingEvent.acceptedRevision
+        ) {
+          sameBatchDeletedFolderIds.add(change.entityId);
+        }
+
         continue;
       }
 
-      const serverRevision = currentEntity?.currentRevision ?? 0;
-      const wasCreatedEarlierInBatch = sameBatchCreatedEntities.has(entityKey);
+      let rejectedChange = false;
 
-      if (serverRevision > change.baseRevision) {
-        conflicts.push({
-          entityType: change.entityType,
-          entityId: change.entityId,
-          serverRevision,
-        });
-        continue;
+      if (change.entityType === "note" && change.operation !== "delete") {
+        const targetFolderId = (change.payload as NotePayload).folderId;
+        const targetFolder = await this.getProjectedEntity(
+          db,
+          projectedEntities,
+          change.userId,
+          "folder",
+          targetFolderId,
+        );
+
+        if (
+          (targetFolder !== null && targetFolder.deletedAt !== null) ||
+          sameBatchDeletedFolderIds.has(targetFolderId)
+        ) {
+          conflicts.push({
+            entityType: "note",
+            entityId: change.entityId,
+            serverRevision: currentEntity?.currentRevision ?? 0,
+          });
+          rejectedChange = true;
+        }
       }
 
       if (
+        !rejectedChange &&
         change.entityType === "note" &&
         (change.operation === "update" || change.operation === "delete") &&
         currentEntity &&
@@ -263,65 +315,124 @@ export class SyncCoordinator extends DurableObject<Env> {
         conflicts.push({
           entityType: "note",
           entityId: change.entityId,
-          serverRevision,
+          serverRevision: currentEntity.currentRevision,
+        });
+        rejectedChange = true;
+      }
+
+      if (change.operation === "update" || change.operation === "delete") {
+        const wasCreatedEarlierInBatch = sameBatchCreatedEntities.has(entityKey);
+
+        if (!currentEntity || currentEntity.deletedAt !== null) {
+          if (change.operation === "update" && !wasCreatedEarlierInBatch) {
+            hasMissingUpdateTarget = true;
+          }
+
+          continue;
+        }
+
+        if (currentEntity.currentRevision !== change.baseRevision) {
+          conflicts.push({
+            entityType: change.entityType,
+            entityId: change.entityId,
+            serverRevision: currentEntity.currentRevision,
+          });
+          continue;
+        }
+
+        if (
+          change.entityType === "folder" &&
+          change.operation === "delete" &&
+          currentEntity.deletedAt === null
+        ) {
+          const childNoteConflicts = await db
+            .prepare(
+              `SELECT id, current_revision AS currentRevision
+               FROM notes
+               WHERE user_id = ?
+                 AND folder_id = ?
+                 AND deleted_at IS NULL
+               ORDER BY id ASC`,
+            )
+            .bind(change.userId, change.entityId)
+            .all<{ id: string; currentRevision: number }>();
+
+          for (const childNote of childNoteConflicts.results ?? []) {
+            const projectedChild = projectedEntities.get(getEntityKey("note", childNote.id));
+
+            if (projectedChild) {
+              if (
+                projectedChild.deletedAt !== null ||
+                projectedChild.folderId !== change.entityId ||
+                sameBatchHandledNoteIds.has(childNote.id)
+              ) {
+                continue;
+              }
+            }
+
+            if (childNote.currentRevision === 1 || sameBatchHandledNoteIds.has(childNote.id)) {
+              continue;
+            }
+
+            conflicts.push({
+              entityType: "note",
+              entityId: childNote.id,
+              serverRevision: childNote.currentRevision,
+            });
+            rejectedChange = true;
+          }
+        }
+      }
+
+      if (rejectedChange) {
+        continue;
+      }
+
+      if (change.operation === "create") {
+        sameBatchCreatedEntities.add(entityKey);
+
+        if (change.entityType === "note") {
+          projectedEntities.set(entityKey, {
+            currentRevision: change.baseRevision + 1,
+            deletedAt: null,
+            folderId: (change.payload as NotePayload).folderId,
+          });
+        } else {
+          projectedEntities.set(entityKey, {
+            currentRevision: change.baseRevision + 1,
+            deletedAt: null,
+            folderId: null,
+          });
+        }
+
+        continue;
+      }
+
+      if (!currentEntity || currentEntity.deletedAt !== null) {
+        continue;
+      }
+
+      if (change.entityType === "note") {
+        sameBatchHandledNoteIds.add(change.entityId);
+
+        projectedEntities.set(entityKey, {
+          currentRevision: change.baseRevision + 1,
+          deletedAt: change.operation === "delete" ? SAME_BATCH_DELETED_AT : null,
+          folderId:
+            change.operation === "update"
+              ? (change.payload as NotePayload).folderId
+              : currentEntity.folderId,
         });
         continue;
       }
 
-      if (
-        change.entityType === "folder" &&
-        change.operation === "delete" &&
-        currentEntity &&
-        currentEntity.deletedAt === null
-      ) {
-        const childNoteConflicts = await db
-          .prepare(
-            `SELECT id, current_revision AS currentRevision
-             FROM notes
-             WHERE user_id = ?
-               AND folder_id = ?
-               AND deleted_at IS NULL
-             ORDER BY id ASC`,
-          )
-          .bind(change.userId, change.entityId)
-          .all<{ id: string; currentRevision: number }>();
+      projectedEntities.set(entityKey, {
+        currentRevision: change.baseRevision + 1,
+        deletedAt: change.operation === "delete" ? SAME_BATCH_DELETED_AT : null,
+        folderId: null,
+      });
 
-        for (const childNote of childNoteConflicts.results ?? []) {
-          if (childNote.currentRevision === 1 || sameBatchHandledNoteIds.has(childNote.id)) {
-            continue;
-          }
-
-          conflicts.push({
-            entityType: "note",
-            entityId: childNote.id,
-            serverRevision: childNote.currentRevision,
-          });
-        }
-      }
-
-      if (
-        change.operation === "update" &&
-        (!currentEntity || currentEntity.deletedAt !== null) &&
-        !wasCreatedEarlierInBatch
-      ) {
-        hasMissingUpdateTarget = true;
-      }
-
-      if (
-        change.entityType === "note" &&
-        (change.operation === "update" || change.operation === "delete") &&
-        currentEntity &&
-        currentEntity.deletedAt === null
-      ) {
-        sameBatchHandledNoteIds.add(change.entityId);
-      }
-
-      if (
-        change.entityType === "folder" &&
-        change.operation === "delete" &&
-        currentEntity &&
-        currentEntity.deletedAt === null
-      ) {
+      if (change.operation === "delete") {
         sameBatchDeletedFolderIds.add(change.entityId);
       }
     }
@@ -335,8 +446,35 @@ export class SyncCoordinator extends DurableObject<Env> {
     }
   }
 
+  private async getProjectedEntity(
+    db: QueryRunner,
+    projectedEntities: ProjectedEntities,
+    userId: string,
+    entityType: SyncChangeInput["entityType"],
+    entityId: string,
+  ) {
+    const entityKey = getEntityKey(entityType, entityId);
+    if (!projectedEntities.has(entityKey)) {
+      projectedEntities.set(
+        entityKey,
+        await this.getCurrentEntityByType(db, userId, entityType, entityId),
+      );
+    }
+
+    return projectedEntities.get(entityKey) ?? null;
+  }
+
   private getCurrentEntity(db: QueryRunner, change: SyncChangeInput) {
-    if (change.entityType === "note") {
+    return this.getCurrentEntityByType(db, change.userId, change.entityType, change.entityId);
+  }
+
+  private getCurrentEntityByType(
+    db: QueryRunner,
+    userId: string,
+    entityType: SyncChangeInput["entityType"],
+    entityId: string,
+  ) {
+    if (entityType === "note") {
       return db
         .prepare(
           `SELECT
@@ -345,8 +483,8 @@ export class SyncCoordinator extends DurableObject<Env> {
              folder_id AS folderId
            FROM notes
            WHERE id = ? AND user_id = ?`,
-        )
-        .bind(change.entityId, change.userId)
+          )
+        .bind(entityId, userId)
         .first<CurrentEntityRow>();
     }
 
@@ -359,7 +497,7 @@ export class SyncCoordinator extends DurableObject<Env> {
          FROM folders
          WHERE id = ? AND user_id = ?`,
       )
-      .bind(change.entityId, change.userId)
+      .bind(entityId, userId)
       .first<CurrentEntityRow>();
   }
 
@@ -592,6 +730,23 @@ export class SyncCoordinator extends DurableObject<Env> {
       )
       .first<{ cursor: number }>();
 
+    return this.repairFolderDeleteCascade(
+      session,
+      change,
+      {
+        acceptedRevision: folderUpdate.acceptedRevision,
+        cursor: folderEvent?.cursor ?? 0,
+      },
+      now,
+    );
+  }
+
+  private async repairFolderDeleteCascade(
+    session: D1DatabaseSession,
+    change: SyncChangeInput,
+    result: SyncChangeResult,
+    now: string,
+  ): Promise<SyncChangeResult> {
     const cascadeNotes = await session
       .prepare(
         `UPDATE notes
@@ -600,14 +755,14 @@ export class SyncCoordinator extends DurableObject<Env> {
            AND EXISTS (
              SELECT 1
              FROM folders
-             WHERE id = ? AND user_id = ? AND deleted_at = ?
+             WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL
            )
          RETURNING id, current_revision AS acceptedRevision`,
       )
-      .bind(now, now, change.entityId, change.userId, change.entityId, change.userId, now)
+      .bind(now, now, change.entityId, change.userId, change.entityId, change.userId)
       .all<{ id: string; acceptedRevision: number }>();
 
-    let cursor = folderEvent?.cursor ?? 0;
+    let cursor = result.cursor;
 
     for (const note of cascadeNotes.results ?? []) {
       const cascadeEvent = await session
@@ -634,7 +789,7 @@ export class SyncCoordinator extends DurableObject<Env> {
     }
 
     return {
-      acceptedRevision: folderUpdate.acceptedRevision,
+      acceptedRevision: result.acceptedRevision,
       cursor,
     };
   }
@@ -680,7 +835,6 @@ export class SyncCoordinator extends DurableObject<Env> {
             `SELECT MAX(cursor) AS cursor
              FROM sync_events
              WHERE user_id = ?
-               AND created_at = ?
                AND (
                  client_change_id = ?
                  OR client_change_id LIKE ?
@@ -688,7 +842,6 @@ export class SyncCoordinator extends DurableObject<Env> {
           )
           .bind(
             change.userId,
-            existing.createdAt,
             change.clientChangeId,
             `cascade_${change.entityId}_%`,
           )
