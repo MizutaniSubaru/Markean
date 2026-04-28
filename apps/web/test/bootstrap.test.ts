@@ -1701,6 +1701,134 @@ describe("bootstrapApp", () => {
     });
   });
 
+  it("removes untouched seeded welcome records when a fresh local DB receives remote records", async () => {
+    installStorageMock();
+    const remoteFolder: FolderRecord = {
+      id: "remote-folder",
+      name: "Remote",
+      sortOrder: 1,
+      currentRevision: 3,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const remoteNote: NoteRecord = {
+      id: "remote-note",
+      folderId: remoteFolder.id,
+      title: "Remote note",
+      bodyMd: "# Remote",
+      bodyPlain: "Remote",
+      currentRevision: 4,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [remoteFolder],
+          notes: [remoteNote],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.toArray()).resolves.toEqual([remoteFolder]);
+    await expect(db.notes.toArray()).resolves.toEqual([remoteNote]);
+    await expect(db.pendingChanges.toArray()).resolves.toEqual([]);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "42",
+    });
+    expect(useFoldersStore.getState().folders).toEqual([remoteFolder]);
+    expect(useNotesStore.getState().notes).toEqual([remoteNote]);
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: remoteFolder.id,
+      activeNoteId: remoteNote.id,
+    });
+  });
+
+  it("preserves edited seeded welcome records when remote records arrive", async () => {
+    installStorageMock();
+    const remoteFolder: FolderRecord = {
+      id: "remote-folder",
+      name: "Remote",
+      sortOrder: 1,
+      currentRevision: 3,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    const remoteNote: NoteRecord = {
+      id: "remote-note",
+      folderId: remoteFolder.id,
+      title: "Remote note",
+      bodyMd: "# Remote",
+      bodyPlain: "Remote",
+      currentRevision: 4,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockImplementation(async () => {
+          const db = getDb();
+          await db.notes.update("welcome-note", {
+            title: "Edited welcome",
+            bodyMd: "# Edited welcome",
+            bodyPlain: "Edited welcome",
+            updatedAt: "2026-04-22T11:00:00.000Z",
+          });
+          await queueChange(db, {
+            entityType: "note",
+            entityId: "welcome-note",
+            operation: "update",
+            baseRevision: 0,
+          });
+
+          return {
+            folders: [remoteFolder],
+            notes: [remoteNote],
+            syncCursor: 42,
+          };
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get(remoteFolder.id)).resolves.toEqual(remoteFolder);
+    await expect(db.notes.get(remoteNote.id)).resolves.toEqual(remoteNote);
+    await expect(db.notes.get("welcome-note")).resolves.toMatchObject({
+      title: "Edited welcome",
+      bodyMd: "# Edited welcome",
+      bodyPlain: "Edited welcome",
+    });
+    const pendingChanges = await db.pendingChanges.toArray();
+    expect(pendingChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityType: "folder",
+          entityId: "notes",
+          operation: "create",
+        }),
+        expect.objectContaining({
+          entityType: "note",
+          entityId: "welcome-note",
+          operation: "create",
+        }),
+        expect.objectContaining({
+          entityType: "note",
+          entityId: "welcome-note",
+          operation: "update",
+        }),
+      ]),
+    );
+  });
+
   it("merges newer remote bootstrap records and stores the sync cursor", async () => {
     installStorageMock();
     const remoteFolder: FolderRecord = {

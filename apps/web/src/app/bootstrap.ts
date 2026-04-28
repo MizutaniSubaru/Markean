@@ -1,6 +1,6 @@
 import { createApiClient } from "@markean/api-client";
 import { markdownToPlainText } from "@markean/domain";
-import type { FolderRecord, NoteRecord } from "@markean/domain";
+import type { FolderRecord, NoteRecord, PendingChange } from "@markean/domain";
 import { queueChange } from "@markean/sync-core";
 import { createWebDatabase, type MarkeanWebDatabase } from "@markean/storage-web";
 import { getWelcomeNote } from "../features/notes/components/shared/WelcomeNote";
@@ -17,6 +17,8 @@ const WORKSPACE_KEY = "markean:workspace";
 const DRAFT_PREFIX = "markean:draft:";
 const SYNC_STATUS_KEY = "markean:sync-status";
 const LOCALE_KEY = "markean:locale";
+const WELCOME_FOLDER_ID = "notes";
+const WELCOME_NOTE_ID = "welcome-note";
 
 type LegacyWorkspace = {
   folders: Array<{ id: string; name: string }>;
@@ -403,7 +405,6 @@ async function ensureWelcomeNote(options: BootstrapApplyOptions = {}): Promise<v
 
   const locale = detectLocale();
   const welcome = getWelcomeNote(locale);
-  const folderId = "notes";
   const now = new Date().toISOString();
 
   await db.transaction("rw", db.folders, db.notes, db.pendingChanges, async () => {
@@ -415,7 +416,7 @@ async function ensureWelcomeNote(options: BootstrapApplyOptions = {}): Promise<v
 
     assertShouldApplyBootstrap(options);
     await db.folders.put({
-      id: folderId,
+      id: WELCOME_FOLDER_ID,
       name: locale.startsWith("zh") ? "笔记" : "Notes",
       sortOrder: 0,
       currentRevision: 0,
@@ -423,12 +424,12 @@ async function ensureWelcomeNote(options: BootstrapApplyOptions = {}): Promise<v
       deletedAt: null,
     });
     assertShouldApplyBootstrap(options);
-    await queueCreateChangeOnce(db, "folder", folderId);
+    await queueCreateChangeOnce(db, "folder", WELCOME_FOLDER_ID);
     assertShouldApplyBootstrap(options);
 
     await db.notes.put({
-      id: "welcome-note",
-      folderId,
+      id: WELCOME_NOTE_ID,
+      folderId: WELCOME_FOLDER_ID,
       title: welcome.title,
       bodyMd: welcome.body,
       bodyPlain: markdownToPlainText(welcome.body),
@@ -437,9 +438,106 @@ async function ensureWelcomeNote(options: BootstrapApplyOptions = {}): Promise<v
       deletedAt: null,
     });
     assertShouldApplyBootstrap(options);
-    await queueCreateChangeOnce(db, "note", "welcome-note");
+    await queueCreateChangeOnce(db, "note", WELCOME_NOTE_ID);
     assertShouldApplyBootstrap(options);
   });
+}
+
+function isUntouchedBootstrapWelcomeFolder(folder: FolderRecord | undefined): boolean {
+  return (
+    folder?.id === WELCOME_FOLDER_ID &&
+    (folder.name === "Notes" || folder.name === "笔记") &&
+    folder.sortOrder === 0 &&
+    folder.currentRevision === 0 &&
+    folder.deletedAt === null
+  );
+}
+
+function isUntouchedBootstrapWelcomeNote(note: NoteRecord | undefined): boolean {
+  if (
+    note?.id !== WELCOME_NOTE_ID ||
+    note.folderId !== WELCOME_FOLDER_ID ||
+    note.currentRevision !== 0 ||
+    note.deletedAt !== null
+  ) {
+    return false;
+  }
+
+  return [getWelcomeNote("en"), getWelcomeNote("zh")].some(
+    (welcome) =>
+      note.title === welcome.title &&
+      note.bodyMd === welcome.body &&
+      note.bodyPlain === markdownToPlainText(welcome.body),
+  );
+}
+
+function getOnlyBootstrapCreateChange(
+  changes: PendingChange[],
+  entityType: PendingChange["entityType"],
+  entityId: string,
+): PendingChange | null {
+  const matchingChanges = changes.filter((change) => change.entityType === entityType);
+  if (matchingChanges.length !== 1) return null;
+
+  const [change] = matchingChanges;
+  if (
+    change.entityId === entityId &&
+    change.operation === "create" &&
+    change.baseRevision === 0
+  ) {
+    return change;
+  }
+
+  return null;
+}
+
+async function removeUntouchedBootstrapWelcomeRecords(
+  db: MarkeanWebDatabase,
+  options: BootstrapApplyOptions = {},
+): Promise<void> {
+  const folder = await db.folders.get(WELCOME_FOLDER_ID);
+  assertShouldApplyBootstrap(options);
+  const note = await db.notes.get(WELCOME_NOTE_ID);
+  assertShouldApplyBootstrap(options);
+  const folderPendingChanges = await db.pendingChanges
+    .where("entityId")
+    .equals(WELCOME_FOLDER_ID)
+    .toArray();
+  assertShouldApplyBootstrap(options);
+  const notePendingChanges = await db.pendingChanges
+    .where("entityId")
+    .equals(WELCOME_NOTE_ID)
+    .toArray();
+  assertShouldApplyBootstrap(options);
+
+  const folderCreateChange = getOnlyBootstrapCreateChange(
+    folderPendingChanges,
+    "folder",
+    WELCOME_FOLDER_ID,
+  );
+  const noteCreateChange = getOnlyBootstrapCreateChange(
+    notePendingChanges,
+    "note",
+    WELCOME_NOTE_ID,
+  );
+  if (
+    !isUntouchedBootstrapWelcomeFolder(folder) ||
+    !isUntouchedBootstrapWelcomeNote(note) ||
+    !folderCreateChange ||
+    !noteCreateChange
+  ) {
+    return;
+  }
+
+  await db.pendingChanges
+    .where("clientChangeId")
+    .anyOf([folderCreateChange.clientChangeId, noteCreateChange.clientChangeId])
+    .delete();
+  assertShouldApplyBootstrap(options);
+  await db.notes.delete(WELCOME_NOTE_ID);
+  assertShouldApplyBootstrap(options);
+  await db.folders.delete(WELCOME_FOLDER_ID);
+  assertShouldApplyBootstrap(options);
 }
 
 let scheduler: ReturnType<typeof createSyncScheduler> | null = null;
@@ -619,6 +717,12 @@ export async function bootstrapApp(
         )
       ) {
         throw new Error("Invalid bootstrap response");
+      }
+      if (serverNotes.length > 0 || serverFolders.length > 0) {
+        await removeUntouchedBootstrapWelcomeRecords(db, {
+          shouldApply: () => !isStale(),
+        });
+        if (isStale()) throw new StaleBootstrapError();
       }
 
       for (const note of serverNotes) {
