@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 
-import type { FolderRecord } from "@markean/domain";
+import type { FolderRecord, NoteRecord } from "@markean/domain";
 import { createWebDatabase, type MarkeanWebDatabase } from "@markean/storage-web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initDb, resetDbForTests } from "../../src/features/notes/persistence/db";
@@ -24,6 +24,39 @@ const folder2: FolderRecord = {
   name: "Archive",
   sortOrder: 1,
   currentRevision: 6,
+  updatedAt: "2026-04-22T10:00:00.000Z",
+  deletedAt: null,
+};
+
+const noteInFolder1: NoteRecord = {
+  id: "note_1",
+  folderId: "folder_1",
+  title: "In folder",
+  bodyMd: "In folder",
+  bodyPlain: "In folder",
+  currentRevision: 3,
+  updatedAt: "2026-04-21T09:00:00.000Z",
+  deletedAt: null,
+};
+
+const secondNoteInFolder1: NoteRecord = {
+  id: "note_2",
+  folderId: "folder_1",
+  title: "Also in folder",
+  bodyMd: "Also in folder",
+  bodyPlain: "Also in folder",
+  currentRevision: 4,
+  updatedAt: "2026-04-21T10:00:00.000Z",
+  deletedAt: null,
+};
+
+const noteInFolder2: NoteRecord = {
+  id: "note_3",
+  folderId: "folder_2",
+  title: "Other folder",
+  bodyMd: "Other folder",
+  bodyPlain: "Other folder",
+  currentRevision: 7,
   updatedAt: "2026-04-22T10:00:00.000Z",
   deletedAt: null,
 };
@@ -98,6 +131,33 @@ describe("folders.persistence", () => {
     });
   });
 
+  it("soft-deleting a folder soft-deletes notes in that folder but not notes in other folders, and queues only the folder delete", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    await db.folders.bulkPut([folder1, folder2]);
+    await db.notes.bulkPut([noteInFolder1, secondNoteInFolder1, noteInFolder2]);
+
+    await deleteFolder("folder_1");
+
+    await expect(db.notes.get("note_1")).resolves.toEqual({
+      ...noteInFolder1,
+      deletedAt: "2026-04-27T12:34:56.789Z",
+    });
+    await expect(db.notes.get("note_2")).resolves.toEqual({
+      ...secondNoteInFolder1,
+      deletedAt: "2026-04-27T12:34:56.789Z",
+    });
+    await expect(db.notes.get("note_3")).resolves.toEqual(noteInFolder2);
+    const changes = await db.pendingChanges.toArray();
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({
+      entityType: "folder",
+      entityId: "folder_1",
+      operation: "delete",
+      baseRevision: 5,
+    });
+  });
+
   it("rolls back folder deletion when queueing the pending change fails", async () => {
     await db.folders.put(folder1);
     db.pendingChanges.hook("creating", () => {
@@ -107,6 +167,33 @@ describe("folders.persistence", () => {
     await expect(deleteFolder("folder_1")).rejects.toThrow("pending change failed");
 
     await expect(db.folders.get("folder_1")).resolves.toEqual(folder1);
+    await expect(db.pendingChanges.toArray()).resolves.toHaveLength(0);
+  });
+
+  it("rolls back child note soft-deletes when queueing the folder delete pending change fails", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    await db.folders.put(folder1);
+    await db.notes.bulkPut([noteInFolder1, secondNoteInFolder1]);
+    const childNoteUpdates: unknown[] = [];
+    db.notes.hook("updating", (changes, _key, note) => {
+      if (note.folderId === "folder_1") {
+        childNoteUpdates.push(changes);
+      }
+    });
+    db.pendingChanges.hook("creating", () => {
+      throw new Error("pending change failed");
+    });
+
+    await expect(deleteFolder("folder_1")).rejects.toThrow("pending change failed");
+
+    expect(childNoteUpdates).toEqual([
+      { deletedAt: "2026-04-27T12:34:56.789Z" },
+      { deletedAt: "2026-04-27T12:34:56.789Z" },
+    ]);
+    await expect(db.folders.get("folder_1")).resolves.toEqual(folder1);
+    await expect(db.notes.get("note_1")).resolves.toEqual(noteInFolder1);
+    await expect(db.notes.get("note_2")).resolves.toEqual(secondNoteInFolder1);
     await expect(db.pendingChanges.toArray()).resolves.toHaveLength(0);
   });
 

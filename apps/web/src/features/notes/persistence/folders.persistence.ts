@@ -21,11 +21,18 @@ export async function createFolder(folder: FolderRecord): Promise<void> {
 
 export async function deleteFolder(id: string): Promise<void> {
   const db = getDb();
-  await db.transaction("rw", db.folders, db.pendingChanges, async () => {
+  await db.transaction("rw", db.folders, db.notes, db.pendingChanges, async () => {
     const existing = await db.folders.get(id);
     if (!existing) return;
 
-    await db.folders.update(id, { deletedAt: new Date().toISOString() });
+    const deletedAt = new Date().toISOString();
+    const childNotes = await db.notes.where("folderId").equals(id).toArray();
+    for (const note of childNotes) {
+      if (note.deletedAt !== null) continue;
+      await db.notes.update(note.id, { deletedAt });
+    }
+
+    await db.folders.update(id, { deletedAt });
     await queueChange(db, {
       entityType: "folder",
       entityId: id,
