@@ -63,6 +63,7 @@ type SyncApplyOptions = {
 type PreparedPendingChange = {
   change: PendingChange;
   payload: Record<string, unknown> | null;
+  noteFolderId: string | null;
 };
 
 function shouldApply(options?: SyncApplyOptions): boolean {
@@ -109,6 +110,33 @@ function payloadString(
 ): string | null {
   const value = prepared.payload?.[field];
   return typeof value === "string" ? value : null;
+}
+
+function compareLegacyFolderDeleteCausality(
+  a: PreparedPendingChange,
+  b: PreparedPendingChange,
+): number {
+  if (getQueuedOrder(a.change) !== null || getQueuedOrder(b.change) !== null) return 0;
+
+  if (
+    a.change.entityType === "folder" &&
+    a.change.operation === "delete" &&
+    b.change.entityType === "note" &&
+    b.noteFolderId === a.change.entityId
+  ) {
+    return 1;
+  }
+
+  if (
+    b.change.entityType === "folder" &&
+    b.change.operation === "delete" &&
+    a.change.entityType === "note" &&
+    a.noteFolderId === b.change.entityId
+  ) {
+    return -1;
+  }
+
+  return 0;
 }
 
 function compareKnownCausality(
@@ -180,6 +208,9 @@ function comparePreparedPendingChanges(
 
   const queuedOrder = compareQueueOrder(a, b);
   if (queuedOrder !== 0) return queuedOrder;
+
+  const legacyFolderDeleteOrder = compareLegacyFolderDeleteCausality(a, b);
+  if (legacyFolderDeleteOrder !== 0) return legacyFolderDeleteOrder;
 
   return compareDeterministicFallback(a, b);
 }
@@ -298,26 +329,28 @@ export async function pushChanges(
   const preparedChanges: PreparedPendingChange[] = [];
   for (const p of pending) {
     let payload: Record<string, unknown> | null = null;
+    let noteFolderId: string | null = null;
 
-    if (p.operation !== "delete") {
-      if (p.entityType === "note") {
-        if (!shouldApply(options)) return { conflicts: [] };
-        const note = await db.notes.get(p.entityId);
-        if (!shouldApply(options)) return { conflicts: [] };
-        if (note) {
+    if (p.entityType === "note") {
+      if (!shouldApply(options)) return { conflicts: [] };
+      const note = await db.notes.get(p.entityId);
+      if (!shouldApply(options)) return { conflicts: [] };
+      if (note) {
+        noteFolderId = note.folderId;
+        if (p.operation !== "delete") {
           payload = { folderId: note.folderId, title: note.title, bodyMd: note.bodyMd };
         }
-      } else {
-        if (!shouldApply(options)) return { conflicts: [] };
-        const folder = await db.folders.get(p.entityId);
-        if (!shouldApply(options)) return { conflicts: [] };
-        if (folder) {
-          payload = { name: folder.name, sortOrder: folder.sortOrder };
-        }
+      }
+    } else if (p.operation !== "delete") {
+      if (!shouldApply(options)) return { conflicts: [] };
+      const folder = await db.folders.get(p.entityId);
+      if (!shouldApply(options)) return { conflicts: [] };
+      if (folder) {
+        payload = { name: folder.name, sortOrder: folder.sortOrder };
       }
     }
 
-    preparedChanges.push({ change: p, payload });
+    preparedChanges.push({ change: p, payload, noteFolderId });
   }
 
   const orderedChanges = orderPendingChanges(preparedChanges);

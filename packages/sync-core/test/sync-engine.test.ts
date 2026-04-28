@@ -628,6 +628,200 @@ describe("sync engine queue", () => {
     await expect(db.notes.get(note.id)).resolves.toMatchObject({ currentRevision: 404 });
   });
 
+  it("pushes legacy child note update before parent folder delete when both changes lack queued order", async () => {
+    const db = createWebDatabase(
+      `test-markean-push-legacy-order-note-update-folder-delete-${crypto.randomUUID()}`,
+    );
+    const folder: FolderRecord = {
+      id: "folder_legacy_deleted_parent",
+      name: "Deleted parent",
+      sortOrder: 1,
+      currentRevision: 7,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: "2026-04-21T09:05:00.000Z",
+    };
+    const note: NoteRecord = {
+      id: "note_legacy_updated_child",
+      folderId: folder.id,
+      title: "Updated child",
+      bodyMd: "Updated child",
+      bodyPlain: "Updated child",
+      currentRevision: 11,
+      updatedAt: "2026-04-21T09:04:00.000Z",
+      deletedAt: null,
+    };
+    await db.folders.put(folder);
+    await db.notes.put(note);
+    await db.pendingChanges.bulkPut([
+      {
+        clientChangeId: "chg_a_folder_delete",
+        entityType: "folder",
+        entityId: folder.id,
+        operation: "delete",
+        baseRevision: folder.currentRevision,
+      },
+      {
+        clientChangeId: "chg_z_note_update",
+        entityType: "note",
+        entityId: note.id,
+        operation: "update",
+        baseRevision: note.currentRevision,
+      },
+    ] satisfies PendingChange[]);
+
+    let pushedEntities: string[] = [];
+    const apiClient: PushApiClient = {
+      async syncPush(input: PushInput) {
+        pushedEntities = input.changes.map(
+          (change) => `${change.entityType}:${change.entityId}:${change.operation}`,
+        );
+        return {
+          accepted: [
+            { acceptedRevision: 505, cursor: 14 },
+            { acceptedRevision: 606, cursor: 15 },
+          ],
+          conflicts: [],
+        };
+      },
+      async syncPull() {
+        throw new Error("syncPull should not be called");
+      },
+    };
+
+    await pushChanges(db, apiClient, "device_1");
+
+    expect(pushedEntities).toEqual([
+      "note:note_legacy_updated_child:update",
+      "folder:folder_legacy_deleted_parent:delete",
+    ]);
+    await expect(db.notes.get(note.id)).resolves.toMatchObject({ currentRevision: 505 });
+    await expect(db.folders.get(folder.id)).resolves.toMatchObject({ currentRevision: 606 });
+  });
+
+  it("pushes legacy child note delete before parent folder delete when both changes lack queued order", async () => {
+    const db = createWebDatabase(
+      `test-markean-push-legacy-order-note-delete-folder-delete-${crypto.randomUUID()}`,
+    );
+    const folder: FolderRecord = {
+      id: "folder_legacy_delete_parent",
+      name: "Deleted parent",
+      sortOrder: 1,
+      currentRevision: 7,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: "2026-04-21T09:05:00.000Z",
+    };
+    const note: NoteRecord = {
+      id: "note_legacy_deleted_child",
+      folderId: folder.id,
+      title: "Deleted child",
+      bodyMd: "Deleted child",
+      bodyPlain: "Deleted child",
+      currentRevision: 11,
+      updatedAt: "2026-04-21T09:04:00.000Z",
+      deletedAt: "2026-04-21T09:05:00.000Z",
+    };
+    await db.folders.put(folder);
+    await db.notes.put(note);
+    await db.pendingChanges.bulkPut([
+      {
+        clientChangeId: "chg_a_folder_delete",
+        entityType: "folder",
+        entityId: folder.id,
+        operation: "delete",
+        baseRevision: folder.currentRevision,
+      },
+      {
+        clientChangeId: "chg_z_note_delete",
+        entityType: "note",
+        entityId: note.id,
+        operation: "delete",
+        baseRevision: note.currentRevision,
+      },
+    ] satisfies PendingChange[]);
+
+    let pushedEntities: string[] = [];
+    const apiClient: PushApiClient = {
+      async syncPush(input: PushInput) {
+        pushedEntities = input.changes.map(
+          (change) => `${change.entityType}:${change.entityId}:${change.operation}`,
+        );
+        return { accepted: [], conflicts: [] };
+      },
+      async syncPull() {
+        throw new Error("syncPull should not be called");
+      },
+    };
+
+    await pushChanges(db, apiClient, "device_1");
+
+    expect(pushedEntities).toEqual([
+      "note:note_legacy_deleted_child:delete",
+      "folder:folder_legacy_delete_parent:delete",
+    ]);
+  });
+
+  it("pushes legacy child note create before parent folder delete when both changes lack queued order", async () => {
+    const db = createWebDatabase(
+      `test-markean-push-legacy-order-note-create-folder-delete-${crypto.randomUUID()}`,
+    );
+    const folder: FolderRecord = {
+      id: "folder_legacy_delete_parent_with_create",
+      name: "Deleted parent",
+      sortOrder: 1,
+      currentRevision: 7,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: "2026-04-21T09:05:00.000Z",
+    };
+    const note: NoteRecord = {
+      id: "note_legacy_created_child",
+      folderId: folder.id,
+      title: "Created child",
+      bodyMd: "Created child",
+      bodyPlain: "Created child",
+      currentRevision: 0,
+      updatedAt: "2026-04-21T09:04:00.000Z",
+      deletedAt: null,
+    };
+    await db.folders.put(folder);
+    await db.notes.put(note);
+    await db.pendingChanges.bulkPut([
+      {
+        clientChangeId: "chg_a_folder_delete",
+        entityType: "folder",
+        entityId: folder.id,
+        operation: "delete",
+        baseRevision: folder.currentRevision,
+      },
+      {
+        clientChangeId: "chg_z_note_create",
+        entityType: "note",
+        entityId: note.id,
+        operation: "create",
+        baseRevision: 0,
+      },
+    ] satisfies PendingChange[]);
+
+    let pushedEntities: string[] = [];
+    const apiClient: PushApiClient = {
+      async syncPush(input: PushInput) {
+        pushedEntities = input.changes.map(
+          (change) => `${change.entityType}:${change.entityId}:${change.operation}`,
+        );
+        return { accepted: [], conflicts: [] };
+      },
+      async syncPull() {
+        throw new Error("syncPull should not be called");
+      },
+    };
+
+    await pushChanges(db, apiClient, "device_1");
+
+    expect(pushedEntities).toEqual([
+      "note:note_legacy_created_child:create",
+      "folder:folder_legacy_delete_parent_with_create:delete",
+    ]);
+  });
+
   it("reconciles accepted push changes even when shouldApply becomes false after server acceptance", async () => {
     const db = createWebDatabase(`test-markean-push-cancel-${crypto.randomUUID()}`);
     const note: NoteRecord = {
