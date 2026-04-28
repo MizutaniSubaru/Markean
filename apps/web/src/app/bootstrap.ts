@@ -493,6 +493,7 @@ function getOnlyBootstrapCreateChange(
 
 async function removeUntouchedBootstrapWelcomeRecords(
   db: MarkeanWebDatabase,
+  remoteWelcomeFolder: FolderRecord | undefined,
   options: BootstrapApplyOptions = {},
 ): Promise<void> {
   const folder = await db.folders.get(WELCOME_FOLDER_ID);
@@ -536,8 +537,9 @@ async function removeUntouchedBootstrapWelcomeRecords(
   }
 
   const changeIdsToDelete = [noteCreateChange.clientChangeId];
-  const shouldPreserveFolder = otherActiveNotesInWelcomeFolder > 0;
-  if (!shouldPreserveFolder) {
+  const shouldPreserveLocalFolder = otherActiveNotesInWelcomeFolder > 0;
+  const shouldDropFolderCreate = !shouldPreserveLocalFolder || remoteWelcomeFolder !== undefined;
+  if (shouldDropFolderCreate) {
     changeIdsToDelete.push(folderCreateChange.clientChangeId);
   }
 
@@ -548,7 +550,13 @@ async function removeUntouchedBootstrapWelcomeRecords(
   assertShouldApplyBootstrap(options);
   await db.notes.delete(WELCOME_NOTE_ID);
   assertShouldApplyBootstrap(options);
-  if (shouldPreserveFolder) return;
+  if (shouldPreserveLocalFolder) {
+    if (remoteWelcomeFolder) {
+      await db.folders.put(remoteWelcomeFolder);
+      assertShouldApplyBootstrap(options);
+    }
+    return;
+  }
 
   await db.folders.delete(WELCOME_FOLDER_ID);
   assertShouldApplyBootstrap(options);
@@ -735,7 +743,10 @@ export async function bootstrapApp(
       const remoteSnapshotComesFromExistingAccount =
         serverNotes.length > 0 || serverFolders.length > 0 || bootstrap.syncCursor > 0;
       if (remoteSnapshotComesFromExistingAccount) {
-        await removeUntouchedBootstrapWelcomeRecords(db, {
+        const remoteWelcomeFolder = serverFolders.find(
+          (folder) => folder.id === WELCOME_FOLDER_ID,
+        );
+        await removeUntouchedBootstrapWelcomeRecords(db, remoteWelcomeFolder, {
           shouldApply: () => !isStale(),
         });
         if (isStale()) throw new StaleBootstrapError();

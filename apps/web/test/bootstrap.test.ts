@@ -1842,6 +1842,89 @@ describe("bootstrapApp", () => {
     );
   });
 
+  it("drops the seeded welcome folder create when remote bootstrap already has active notes folder", async () => {
+    installStorageMock();
+    const userNote: NoteRecord = {
+      id: "local-note-in-remote-notes-folder",
+      folderId: "notes",
+      title: "Local note",
+      bodyMd: "# Local",
+      bodyPlain: "Local",
+      currentRevision: 0,
+      updatedAt: "2026-04-22T11:00:00.000Z",
+      deletedAt: null,
+    };
+    const remoteFolder: FolderRecord = {
+      id: "notes",
+      name: "Remote Notes",
+      sortOrder: 2,
+      currentRevision: 7,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [remoteFolder],
+          notes: [],
+          syncCursor: 42,
+        }),
+      }),
+    );
+    setBootstrapConcurrencyHooksForTests({
+      beforeRemoteWrite: async () => {
+        const db = getDb();
+        await db.notes.put(userNote);
+        await queueChange(db, {
+          entityType: "note",
+          entityId: userNote.id,
+          operation: "create",
+          baseRevision: 0,
+        });
+      },
+    });
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.notes.get(userNote.id)).resolves.toEqual(userNote);
+    await expect(db.folders.get("notes")).resolves.toEqual(remoteFolder);
+    await expect(db.notes.get("welcome-note")).resolves.toBeUndefined();
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "42",
+    });
+
+    const pendingChanges = await db.pendingChanges.toArray();
+    expect(pendingChanges).toHaveLength(1);
+    expect(pendingChanges).toEqual([
+      expect.objectContaining({
+        entityType: "note",
+        entityId: userNote.id,
+        operation: "create",
+      }),
+    ]);
+    expect(pendingChanges).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityType: "folder",
+          entityId: "notes",
+          operation: "create",
+        }),
+      ]),
+    );
+    expect(pendingChanges).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityType: "note",
+          entityId: "welcome-note",
+          operation: "create",
+        }),
+      ]),
+    );
+  });
+
   it("removes untouched seeded welcome records when an existing remote account has an empty active snapshot", async () => {
     installStorageMock();
     vi.stubGlobal(
