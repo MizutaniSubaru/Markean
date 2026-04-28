@@ -1992,18 +1992,13 @@ describe("bootstrapApp", () => {
     await expect(db.notes.get(userNote.id)).resolves.toEqual(userNote);
 
     const pendingChanges = await db.pendingChanges.toArray();
-    expect(pendingChanges).toHaveLength(3);
+    expect(pendingChanges).toHaveLength(2);
     expect(pendingChanges).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           entityType: "note",
           entityId: "welcome-note",
           operation: "create",
-        }),
-        expect.objectContaining({
-          entityType: "note",
-          entityId: "welcome-note",
-          operation: "update",
         }),
         expect.objectContaining({
           entityType: "note",
@@ -2178,11 +2173,6 @@ describe("bootstrapApp", () => {
           entityType: "note",
           entityId: "welcome-note",
           operation: "create",
-        }),
-        expect.objectContaining({
-          entityType: "note",
-          entityId: "welcome-note",
-          operation: "update",
         }),
       ]),
     );

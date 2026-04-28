@@ -131,7 +131,7 @@ describe("folders.persistence", () => {
     });
   });
 
-  it("soft-deleting a folder soft-deletes notes in that folder but not notes in other folders, and queues only the folder delete", async () => {
+  it("soft-deleting a folder queues changed child note deletes before the folder delete", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
     await db.folders.bulkPut([folder1, folder2]);
@@ -148,14 +148,27 @@ describe("folders.persistence", () => {
       deletedAt: "2026-04-27T12:34:56.789Z",
     });
     await expect(db.notes.get("note_3")).resolves.toEqual(noteInFolder2);
-    const changes = await db.pendingChanges.toArray();
-    expect(changes).toHaveLength(1);
-    expect(changes[0]).toMatchObject({
-      entityType: "folder",
-      entityId: "folder_1",
-      operation: "delete",
-      baseRevision: 5,
-    });
+    const changes = await db.pendingChanges.orderBy("queuedOrder").toArray();
+    expect(changes).toMatchObject([
+      {
+        entityType: "note",
+        entityId: "note_1",
+        operation: "delete",
+        baseRevision: 3,
+      },
+      {
+        entityType: "note",
+        entityId: "note_2",
+        operation: "delete",
+        baseRevision: 4,
+      },
+      {
+        entityType: "folder",
+        entityId: "folder_1",
+        operation: "delete",
+        baseRevision: 5,
+      },
+    ]);
   });
 
   it("rolls back folder deletion when queueing the pending change fails", async () => {
@@ -170,7 +183,7 @@ describe("folders.persistence", () => {
     await expect(db.pendingChanges.toArray()).resolves.toHaveLength(0);
   });
 
-  it("rolls back child note soft-deletes when queueing the folder delete pending change fails", async () => {
+  it("rolls back child note soft-deletes when queueing a pending delete change fails", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
     await db.folders.put(folder1);
@@ -188,7 +201,6 @@ describe("folders.persistence", () => {
     await expect(deleteFolder("folder_1")).rejects.toThrow("pending change failed");
 
     expect(childNoteUpdates).toEqual([
-      { deletedAt: "2026-04-27T12:34:56.789Z" },
       { deletedAt: "2026-04-27T12:34:56.789Z" },
     ]);
     await expect(db.folders.get("folder_1")).resolves.toEqual(folder1);

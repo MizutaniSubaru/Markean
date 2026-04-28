@@ -3,7 +3,7 @@ import "fake-indexeddb/auto";
 import type { FolderRecord, NoteRecord, PendingChange } from "@markean/domain";
 import { describe, expect, it } from "vitest";
 import { createWebDatabase } from "../../storage-web/src/index";
-import { getDeviceId, pullChanges, pushChanges, queueChange } from "../src/index";
+import { getDeviceId, pullChanges, pushChanges, queueChange, runSyncCycle } from "../src/index";
 
 type QueuedPendingChange = PendingChange & { queuedOrder: number };
 type MaybeQueuedPendingChange = PendingChange & { queuedOrder?: number };
@@ -250,7 +250,7 @@ describe("sync engine queue", () => {
     await pushChanges(db, apiClient, "device_1");
 
     expect(await db.pendingChanges.toArray()).toHaveLength(0);
-    expect(await db.syncState.get("syncCursor")).toEqual({ key: "syncCursor", value: "10" });
+    expect(await db.syncState.get("syncCursor")).toBeUndefined();
     await expect(db.notes.get("note_1")).resolves.toMatchObject({
       currentRevision: 2,
     });
@@ -941,10 +941,7 @@ describe("sync engine queue", () => {
       currentRevision: 2,
     });
     await expect(db.pendingChanges.toArray()).resolves.toHaveLength(0);
-    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
-      key: "syncCursor",
-      value: "10",
-    });
+    await expect(db.syncState.get("syncCursor")).resolves.toBeUndefined();
   });
 
   it("does not regress sync cursor while reconciling accepted push changes", async () => {
@@ -990,6 +987,82 @@ describe("sync engine queue", () => {
     await expect(db.syncState.get("syncCursor")).resolves.toEqual({
       key: "syncCursor",
       value: "50",
+    });
+  });
+
+  it("pulls from the pre-push cursor after accepted local changes", async () => {
+    const db = createWebDatabase(`test-markean-cycle-pre-push-cursor-${crypto.randomUUID()}`);
+    const localNote: NoteRecord = {
+      id: "note_local",
+      folderId: "folder_1",
+      title: "Local title",
+      bodyMd: "Local body",
+      bodyPlain: "Local body",
+      currentRevision: 1,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const remoteFolder: FolderRecord = {
+      id: "folder_remote",
+      name: "Remote",
+      sortOrder: 3,
+      currentRevision: 1,
+      updatedAt: "2026-04-22T10:00:00.000Z",
+      deletedAt: null,
+    };
+    await db.notes.put(localNote);
+    await db.syncState.put({ key: "syncCursor", value: "10" });
+    await queueChange(db, {
+      entityType: "note",
+      entityId: localNote.id,
+      operation: "update",
+      baseRevision: localNote.currentRevision,
+    });
+
+    let pullCursor: number | null = null;
+    const apiClient = {
+      async syncPush() {
+        return {
+          accepted: [{ acceptedRevision: 2, cursor: 12 }],
+          conflicts: [],
+        };
+      },
+      async syncPull(cursor: number) {
+        pullCursor = cursor;
+        return {
+          nextCursor: 12,
+          events: [
+            {
+              cursor: 11,
+              entityType: "folder",
+              entityId: remoteFolder.id,
+              operation: "create",
+              revisionNumber: remoteFolder.currentRevision,
+              sourceDeviceId: "server_device",
+              entity: remoteFolder,
+            },
+            {
+              cursor: 12,
+              entityType: "note",
+              entityId: localNote.id,
+              operation: "update",
+              revisionNumber: 2,
+              sourceDeviceId: "device_local",
+              entity: { ...localNote, currentRevision: 2 },
+            },
+          ],
+        };
+      },
+    };
+
+    await db.syncState.put({ key: "deviceId", value: "device_local" });
+    await runSyncCycle(db, apiClient);
+
+    expect(pullCursor).toBe(10);
+    await expect(db.folders.get(remoteFolder.id)).resolves.toEqual(remoteFolder);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "12",
     });
   });
 
@@ -1088,10 +1161,7 @@ describe("sync engine queue", () => {
       currentRevision: 2,
     });
     await expect(db.pendingChanges.toArray()).resolves.toHaveLength(0);
-    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
-      key: "syncCursor",
-      value: "10",
-    });
+    await expect(db.syncState.get("syncCursor")).resolves.toBeUndefined();
   });
 
   it("does not apply pulled events when shouldApply becomes false", async () => {

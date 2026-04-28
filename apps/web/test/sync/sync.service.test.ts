@@ -648,7 +648,7 @@ describe("sync.service", () => {
         },
       ],
     });
-    expect(apiClient.syncPull).toHaveBeenCalledWith(11);
+    expect(apiClient.syncPull).toHaveBeenCalledWith(0);
     await expect(db.syncState.get("syncCursor")).resolves.toEqual({
       key: "syncCursor",
       value: "12",

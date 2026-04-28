@@ -341,14 +341,6 @@ async function applyAcceptedPushChanges(
       const acceptedIds = acceptedChanges.map((change) => change.clientChangeId);
       await db.pendingChanges.where("clientChangeId").anyOf(acceptedIds).delete();
     }
-
-    const latestCursor = accepted.at(-1)?.cursor;
-    if (latestCursor !== undefined) {
-      const currentCursorRecord = await db.syncState.get("syncCursor");
-      const currentCursor = parseStoredCursor(currentCursorRecord?.value);
-      const nextCursor = Math.max(currentCursor, latestCursor);
-      await db.syncState.put({ key: "syncCursor", value: String(nextCursor) });
-    }
   });
 }
 
@@ -356,6 +348,49 @@ export async function queueChange(
   db: SyncableDatabase,
   input: Omit<PendingChange, "clientChangeId" | "queuedOrder">,
 ): Promise<unknown> {
+  const pending = await db.pendingChanges.toArray();
+  const sameEntityChanges = pending.filter(
+    (change) => change.entityType === input.entityType && change.entityId === input.entityId,
+  );
+
+  if (sameEntityChanges.length > 0) {
+    const existingCreate = sameEntityChanges.find((change) => change.operation === "create");
+    if (existingCreate) {
+      if (input.operation === "delete") {
+        await db.pendingChanges
+          .where("clientChangeId")
+          .anyOf(sameEntityChanges.map((change) => change.clientChangeId))
+          .delete();
+      }
+
+      return undefined;
+    }
+
+    const existingDelete = sameEntityChanges.find((change) => change.operation === "delete");
+    if (existingDelete) {
+      return undefined;
+    }
+
+    const existingUpdate = sameEntityChanges.find((change) => change.operation === "update");
+    if (existingUpdate) {
+      if (input.operation === "update") {
+        return undefined;
+      }
+
+      await db.pendingChanges
+        .where("clientChangeId")
+        .anyOf(sameEntityChanges.map((change) => change.clientChangeId))
+        .delete();
+      const queuedOrder = getQueuedOrder(existingUpdate) ?? (await nextQueuedOrder(db));
+      const change = createPendingChange({
+        ...input,
+        baseRevision: existingUpdate.baseRevision,
+        queuedOrder,
+      });
+      return db.pendingChanges.put(change);
+    }
+  }
+
   const change = createPendingChange({ ...input, queuedOrder: await nextQueuedOrder(db) });
   return db.pendingChanges.put(change);
 }
