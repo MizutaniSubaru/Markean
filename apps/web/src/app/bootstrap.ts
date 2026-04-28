@@ -718,7 +718,9 @@ export async function bootstrapApp(
       ) {
         throw new Error("Invalid bootstrap response");
       }
-      if (serverNotes.length > 0 || serverFolders.length > 0) {
+      const remoteSnapshotComesFromExistingAccount =
+        serverNotes.length > 0 || serverFolders.length > 0 || bootstrap.syncCursor > 0;
+      if (remoteSnapshotComesFromExistingAccount) {
         await removeUntouchedBootstrapWelcomeRecords(db, {
           shouldApply: () => !isStale(),
         });

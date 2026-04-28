@@ -1750,6 +1750,92 @@ describe("bootstrapApp", () => {
     });
   });
 
+  it("removes untouched seeded welcome records when an existing remote account has an empty active snapshot", async () => {
+    installStorageMock();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [],
+          syncCursor: 42,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.toArray()).resolves.toEqual([]);
+    await expect(db.notes.toArray()).resolves.toEqual([]);
+    await expect(db.pendingChanges.toArray()).resolves.toEqual([]);
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "42",
+    });
+    expect(useFoldersStore.getState().folders).toEqual([]);
+    expect(useNotesStore.getState().notes).toEqual([]);
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: "",
+      activeNoteId: "",
+    });
+  });
+
+  it("preserves seeded welcome records when a brand-new remote account has an empty active snapshot", async () => {
+    installStorageMock();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          folders: [],
+          notes: [],
+          syncCursor: 0,
+        }),
+      }),
+    );
+
+    await bootstrapApp("https://example.test");
+
+    const db = getDb();
+    await expect(db.folders.get("notes")).resolves.toMatchObject({
+      id: "notes",
+      currentRevision: 0,
+      deletedAt: null,
+    });
+    await expect(db.notes.get("welcome-note")).resolves.toMatchObject({
+      id: "welcome-note",
+      folderId: "notes",
+      currentRevision: 0,
+      deletedAt: null,
+    });
+    const pendingChanges = await db.pendingChanges.toArray();
+    expect(pendingChanges).toHaveLength(2);
+    expect(pendingChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityType: "folder",
+          entityId: "notes",
+          operation: "create",
+        }),
+        expect.objectContaining({
+          entityType: "note",
+          entityId: "welcome-note",
+          operation: "create",
+        }),
+      ]),
+    );
+    await expect(db.syncState.get("syncCursor")).resolves.toEqual({
+      key: "syncCursor",
+      value: "0",
+    });
+    expect(useFoldersStore.getState().folders.map((folder) => folder.id)).toEqual(["notes"]);
+    expect(useNotesStore.getState().notes.map((note) => note.id)).toEqual(["welcome-note"]);
+    expect(useEditorStore.getState()).toMatchObject({
+      activeFolderId: "notes",
+      activeNoteId: "welcome-note",
+    });
+  });
+
   it("preserves edited seeded welcome records when remote records arrive", async () => {
     installStorageMock();
     const remoteFolder: FolderRecord = {
