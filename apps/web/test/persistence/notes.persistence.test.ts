@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 
 import type { NoteRecord } from "@markean/domain";
+import { pushChanges } from "@markean/sync-core";
 import { createWebDatabase, type MarkeanWebDatabase } from "@markean/storage-web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb, initDb, resetDbForTests } from "../../src/features/notes/persistence/db";
@@ -116,6 +117,125 @@ describe("notes.persistence", () => {
       operation: "update",
       baseRevision: 3,
     });
+  });
+
+  it("coalesces create then update into one create with the latest note payload", async () => {
+    const note: NoteRecord = {
+      id: "note_create_update",
+      folderId: "folder_1",
+      title: "Initial",
+      bodyMd: "Initial body",
+      bodyPlain: "Initial body",
+      currentRevision: 0,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+
+    await createNote(note);
+    await updateNote(note.id, {
+      title: "Edited",
+      bodyMd: "Edited body",
+      bodyPlain: "Edited body",
+    });
+
+    const pending = await db.pendingChanges.toArray();
+    expect(pending).toMatchObject([
+      {
+        entityType: "note",
+        entityId: note.id,
+        operation: "create",
+        baseRevision: 0,
+      },
+    ]);
+
+    const pushedChanges: Parameters<Parameters<typeof pushChanges>[1]["syncPush"]>[0]["changes"][] = [];
+    await pushChanges(
+      db,
+      {
+        async syncPush(input) {
+          pushedChanges.push(input.changes);
+          return { accepted: [{ acceptedRevision: 1, cursor: 1 }], conflicts: [] };
+        },
+        async syncPull() {
+          throw new Error("syncPull should not be called");
+        },
+      },
+      "device_1",
+    );
+
+    expect(pushedChanges).toEqual([
+      [
+        {
+          clientChangeId: expect.any(String),
+          entityType: "note",
+          entityId: note.id,
+          operation: "create",
+          baseRevision: 0,
+          payload: {
+            folderId: "folder_1",
+            title: "Edited",
+            bodyMd: "Edited body",
+          },
+        },
+      ],
+    ]);
+  });
+
+  it("coalesces repeated updates into one update with the original base revision and latest payload", async () => {
+    await db.notes.put(note2);
+
+    await updateNote(note2.id, {
+      title: "First edit",
+      bodyMd: "First body",
+      bodyPlain: "First body",
+    });
+    await updateNote(note2.id, {
+      title: "Second edit",
+      bodyMd: "Second body",
+      bodyPlain: "Second body",
+    });
+
+    const pending = await db.pendingChanges.toArray();
+    expect(pending).toMatchObject([
+      {
+        entityType: "note",
+        entityId: note2.id,
+        operation: "update",
+        baseRevision: 4,
+      },
+    ]);
+
+    const pushedChanges: Parameters<Parameters<typeof pushChanges>[1]["syncPush"]>[0]["changes"][] = [];
+    await pushChanges(
+      db,
+      {
+        async syncPush(input) {
+          pushedChanges.push(input.changes);
+          return { accepted: [{ acceptedRevision: 5, cursor: 1 }], conflicts: [] };
+        },
+        async syncPull() {
+          throw new Error("syncPull should not be called");
+        },
+      },
+      "device_1",
+    );
+
+    expect(pushedChanges).toEqual([
+      [
+        {
+          clientChangeId: expect.any(String),
+          entityType: "note",
+          entityId: note2.id,
+          operation: "update",
+          baseRevision: 4,
+          payload: {
+            folderId: "folder_2",
+            title: "Second edit",
+            bodyMd: "Second body",
+          },
+        },
+      ],
+    ]);
   });
 
   it("rolls back note updates when queueing the pending change fails", async () => {
