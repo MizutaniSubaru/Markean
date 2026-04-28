@@ -509,6 +509,12 @@ async function removeUntouchedBootstrapWelcomeRecords(
     .equals(WELCOME_NOTE_ID)
     .toArray();
   assertShouldApplyBootstrap(options);
+  const otherActiveNotesInWelcomeFolder = await db.notes
+    .where("folderId")
+    .equals(WELCOME_FOLDER_ID)
+    .filter((localNote) => localNote.id !== WELCOME_NOTE_ID && localNote.deletedAt === null)
+    .count();
+  assertShouldApplyBootstrap(options);
 
   const folderCreateChange = getOnlyBootstrapCreateChange(
     folderPendingChanges,
@@ -529,13 +535,21 @@ async function removeUntouchedBootstrapWelcomeRecords(
     return;
   }
 
+  const changeIdsToDelete = [noteCreateChange.clientChangeId];
+  const shouldPreserveFolder = otherActiveNotesInWelcomeFolder > 0;
+  if (!shouldPreserveFolder) {
+    changeIdsToDelete.push(folderCreateChange.clientChangeId);
+  }
+
   await db.pendingChanges
     .where("clientChangeId")
-    .anyOf([folderCreateChange.clientChangeId, noteCreateChange.clientChangeId])
+    .anyOf(changeIdsToDelete)
     .delete();
   assertShouldApplyBootstrap(options);
   await db.notes.delete(WELCOME_NOTE_ID);
   assertShouldApplyBootstrap(options);
+  if (shouldPreserveFolder) return;
+
   await db.folders.delete(WELCOME_FOLDER_ID);
   assertShouldApplyBootstrap(options);
 }
