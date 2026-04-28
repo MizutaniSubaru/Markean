@@ -10,6 +10,7 @@ import {
   deleteFolder,
   getAllFolders,
 } from "../../src/features/notes/persistence/folders.persistence";
+import { createNote } from "../../src/features/notes/persistence/notes.persistence";
 
 const folder1: FolderRecord = {
   id: "folder_1",
@@ -274,6 +275,60 @@ describe("folders.persistence", () => {
         },
       ],
     ]);
+  });
+
+  it("coalesces a local-only folder and child note create when the folder is deleted before sync", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-27T12:34:56.789Z"));
+    const folder: FolderRecord = {
+      id: "folder_local_only",
+      name: "Draft folder",
+      sortOrder: 2,
+      currentRevision: 0,
+      updatedAt: "2026-04-21T09:00:00.000Z",
+      deletedAt: null,
+    };
+    const childNote: NoteRecord = {
+      id: "note_local_only",
+      folderId: folder.id,
+      title: "Draft child",
+      bodyMd: "Draft child",
+      bodyPlain: "Draft child",
+      currentRevision: 0,
+      updatedAt: "2026-04-21T09:05:00.000Z",
+      deletedAt: null,
+    };
+
+    await createFolder(folder);
+    await createNote(childNote);
+    await deleteFolder(folder.id);
+
+    await expect(db.folders.get(folder.id)).resolves.toEqual({
+      ...folder,
+      deletedAt: "2026-04-27T12:34:56.789Z",
+    });
+    await expect(db.notes.get(childNote.id)).resolves.toEqual({
+      ...childNote,
+      deletedAt: "2026-04-27T12:34:56.789Z",
+    });
+    await expect(db.pendingChanges.toArray()).resolves.toEqual([]);
+
+    let syncPushCalled = false;
+    await pushChanges(
+      db,
+      {
+        async syncPush() {
+          syncPushCalled = true;
+          return { accepted: [], conflicts: [] };
+        },
+        async syncPull() {
+          throw new Error("syncPull should not be called");
+        },
+      },
+      "device_1",
+    );
+
+    expect(syncPushCalled).toBe(false);
   });
 
   it("rolls back folder deletion when queueing the pending change fails", async () => {

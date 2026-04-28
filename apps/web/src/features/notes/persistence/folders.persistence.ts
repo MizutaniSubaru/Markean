@@ -27,10 +27,14 @@ export async function deleteFolder(id: string): Promise<void> {
 
     const deletedAt = new Date().toISOString();
     const childNotes = await db.notes.where("folderId").equals(id).toArray();
+    const pendingChanges = await db.pendingChanges.toArray();
     for (const note of childNotes) {
       if (note.deletedAt !== null) continue;
       await db.notes.update(note.id, { deletedAt });
-      if (note.currentRevision > 1) {
+      const childHasPendingChange = pendingChanges.some(
+        (change) => change.entityType === "note" && change.entityId === note.id,
+      );
+      if (note.currentRevision > 1 || childHasPendingChange) {
         await queueChange(db, {
           entityType: "note",
           entityId: note.id,
