@@ -10,6 +10,11 @@ type PushBody = {
   changes: Array<Omit<SyncChangeInput, "userId" | "deviceId">>;
 };
 
+const getEntityKey = (
+  entityType: SyncChangeInput["entityType"],
+  entityId: string,
+) => `${entityType}:${entityId}`;
+
 export const syncRoutes = new Hono<AuthEnv>()
   .use("/api/sync/*", requireAuth)
   .post("/api/sync/push", async (c) => {
@@ -22,8 +27,16 @@ export const syncRoutes = new Hono<AuthEnv>()
       serverRevision: number;
     }> = [];
     let hasMissingUpdateTarget = false;
+    const sameBatchCreatedEntities = new Set<string>();
 
     for (const change of body.changes) {
+      const entityKey = getEntityKey(change.entityType, change.entityId);
+
+      if (change.operation === "create") {
+        sameBatchCreatedEntities.add(entityKey);
+        continue;
+      }
+
       if (change.operation !== "update" && change.operation !== "delete") continue;
 
       const existingAcceptedChange = await db
@@ -61,6 +74,8 @@ export const syncRoutes = new Hono<AuthEnv>()
         .first<{ currentRevision: number; deletedAt: string | null }>();
 
       const serverRevision = currentEntity?.currentRevision ?? 0;
+      const wasCreatedEarlierInBatch = sameBatchCreatedEntities.has(entityKey);
+
       if (serverRevision > change.baseRevision) {
         conflicts.push({
           entityType: change.entityType,
@@ -70,7 +85,39 @@ export const syncRoutes = new Hono<AuthEnv>()
         continue;
       }
 
-      if (change.operation === "update" && (!currentEntity || currentEntity.deletedAt !== null)) {
+      if (
+        change.entityType === "folder" &&
+        change.operation === "delete" &&
+        currentEntity &&
+        currentEntity.deletedAt === null
+      ) {
+        const childNoteConflicts = await db
+          .prepare(
+            `SELECT id, current_revision AS currentRevision
+             FROM notes
+             WHERE user_id = ?
+               AND folder_id = ?
+               AND deleted_at IS NULL
+               AND current_revision > ?
+             ORDER BY id ASC`,
+          )
+          .bind(userId, change.entityId, change.baseRevision)
+          .all<{ id: string; currentRevision: number }>();
+
+        for (const childNote of childNoteConflicts.results ?? []) {
+          conflicts.push({
+            entityType: "note",
+            entityId: childNote.id,
+            serverRevision: childNote.currentRevision,
+          });
+        }
+      }
+
+      if (
+        change.operation === "update" &&
+        (!currentEntity || currentEntity.deletedAt !== null) &&
+        !wasCreatedEarlierInBatch
+      ) {
         hasMissingUpdateTarget = true;
       }
     }
